@@ -789,7 +789,7 @@ class expStaticImportEngine
         $db = eZDB::instance();
         $out = array( 'pages' => 0, 'comments' => 0, 'stored' => 0, 'missing' => 0, 'replaced_left' => 0, 'trashed' => 0, 'by_page' => array(), 'counts' => array() );
         // text without markup, references and whitespace: what a reader reads, however the XML wrote it
-        $plain = function ( $html ) { return preg_replace( '/\s+/u', '', html_entity_decode( strip_tags( str_replace( '<', ' <', (string)$html ) ), ENT_QUOTES | ENT_HTML5, 'UTF-8' ) ); };
+        $plain = function ( $html ) { return preg_replace( '/[\s\x{00A0}]+/u', '', html_entity_decode( strip_tags( str_replace( '<', ' <', (string)$html ) ), ENT_QUOTES | ENT_HTML5, 'UTF-8' ) ); };
         $n = 0;
         foreach ( $this->state->data['pages'] as $path => $entry )
         {
