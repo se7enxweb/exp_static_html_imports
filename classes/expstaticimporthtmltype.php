@@ -29,6 +29,24 @@
  *   AssetSuffixes[]          files that are media, not pages (png, jpg, gif, pdf, zip ...)
  *   DuplicatePatterns[]      regular expressions on the path; a matching page is imported only when no page with the
  *                            same content was imported under another path (it then becomes an alias of it)
+ *
+ * Where a page goes when its folder says nothing (an export of flat folders, such as Confluence's display/<SPACE>/):
+ *   BreadcrumbSelector       the links of a page's breadcrumb (e.g. "#breadcrumbs a"), from the top down: the nearest
+ *                            one that is a page of the import is the page's parent, before the folder rule
+ *   BreadcrumbPaths[]        shell patterns of the pages whose breadcrumb is read (empty: every page)
+ *   GroupFolders[]           shell patterns of folders (e.g. "display", "display/*") that become a section page of their
+ *                            own when they have no page by their name: the parent of the folder's pages left without
+ *                            one. Its path is the folder with a slash ("display/EZP/")
+ *   GroupTitles[<folder>]    the title of a group page; else the text of GroupTitleSelector (e.g. the breadcrumb's
+ *                            first item, the space's name) in the first page of the folder that has it; else the name
+ *   GroupClass               the class of the group pages (default DefaultClass);  GroupBody  an optional text
+ *
+ * What is no page:
+ *   NotFoundTitlePatterns[]  regular expressions on <title>: the export's error pages (404, "kernel (20) / Error")
+ *   SkipBinaryPages          (default enabled) a file with a page suffix that is no HTML (a font, a gzip file)
+ *   AssetPages               (default disabled) a page whose body is one image or one link to a media file and no
+ *                            text (AssetPageMaxText, default 0 characters) is the viewer of that file: the file becomes a
+ *                            media object and the page's path redirects to it.  AssetPagePaths[]: always such pages
  */
 abstract class expStaticImportHtmlType implements expStaticImportTypeInterface
 {
@@ -37,6 +55,12 @@ abstract class expStaticImportHtmlType implements expStaticImportTypeInterface
 
     /** @var array path => true, the pages discover() found */
     protected $known = array();
+
+    /** @var array path => the parent read from the page's breadcrumb */
+    protected $breadcrumbParents = array();
+
+    /** @var array group path ("<folder>/") => its title */
+    protected $groups = array();
 
     public function configure( expStaticImportRules $rules )
     {
@@ -75,19 +99,230 @@ abstract class expStaticImportHtmlType implements expStaticImportTypeInterface
                 continue;
             $paths[] = $path;
         }
+        $paths = $this->readStructure( $source, $paths );
         usort( $paths, function ( $a, $b ) {
-            $depth = substr_count( $a, '/' ) - substr_count( $b, '/' );
+            $depth = substr_count( rtrim( $a, '/' ), '/' ) - substr_count( rtrim( $b, '/' ), '/' );
             return $depth !== 0 ? $depth : strcmp( $a, $b );
         } );
+        $this->known = array_fill_keys( $paths, true );
+        return $this->parentsFirst( $paths );
+    }
+
+    /**
+     * The breadcrumb parents (BreadcrumbSelector) and the group pages (GroupFolders[]) of the discovered pages.
+     *
+     * @param string $source
+     * @param array $paths
+     * @return array the paths, with the group pages added
+     */
+    protected function readStructure( $source, array $paths )
+    {
+        $this->breadcrumbParents = $this->groups = array();
+        $selector = trim( (string)$this->rules->get( 'BreadcrumbSelector', '' ) );
+        $crumbPaths = $this->rules->getList( 'BreadcrumbPaths' );
+        $groupFolders = $this->rules->getList( 'GroupFolders' );
+        $titleSelector = trim( (string)$this->rules->get( 'GroupTitleSelector', '' ) );
+        $known = array_fill_keys( $paths, true );
+        $folderTitles = array();
+        foreach ( $paths as $path )
+        {
+            $read = $selector !== '' && ( !$crumbPaths || self::matchesAny( $path, $crumbPaths ) );
+            $needTitle = $titleSelector !== '' && $groupFolders && !isset( $folderTitles[dirname( $path )] ) && self::matchesAny( dirname( $path ), $groupFolders );
+            if ( !$read && !$needTitle )
+                continue;
+            $html = @file_get_contents( rtrim( $source, '/' ) . '/' . $path );
+            if ( !is_string( $html ) || $html === '' || $this->isBinary( $html ) )
+                continue;
+            $doc = expStaticImportDom::load( $html );
+            if ( $read )
+            {
+                $parent = '';
+                foreach ( expStaticImportDom::query( $doc, $selector ) as $link )
+                {
+                    $target = $link instanceof DOMElement ? expStaticImportDom::resolve( $path, $link->getAttribute( 'href' ) ) : null;
+                    if ( $target !== null && $target !== $path && isset( $known[$target] ) )
+                        $parent = $target;
+                }
+                if ( $parent !== '' )
+                    $this->breadcrumbParents[$path] = $parent;
+            }
+            if ( $needTitle && ( $node = expStaticImportDom::first( $doc, $titleSelector ) ) && ( $text = expStaticImportDom::text( $node ) ) !== '' )
+                $folderTitles[dirname( $path )] = $text;
+        }
+        if ( $groupFolders )
+        {
+            $folders = array();
+            foreach ( $paths as $path )
+                for ( $dir = dirname( $path ); $dir !== '.' && $dir !== '' && $dir !== '/'; $dir = dirname( $dir ) )
+                    $folders[$dir] = true;
+            $titles = $this->rules->getHash( 'GroupTitles' );
+            $indexFiles = $this->rules->getList( 'IndexFiles' ) ?: array( 'index.html' );
+            foreach ( array_keys( $folders ) as $folder )
+            {
+                if ( !self::matchesAny( $folder, $groupFolders ) || isset( $known[$folder . '.html'] ) )
+                    continue;
+                foreach ( $indexFiles as $index )
+                    if ( isset( $known[$folder . '/' . $index] ) )
+                        continue 2;
+                $this->groups[$folder . '/'] = isset( $titles[$folder] ) && trim( (string)$titles[$folder] ) !== '' ? trim( (string)$titles[$folder] )
+                    : ( isset( $folderTitles[$folder] ) ? $folderTitles[$folder] : ucfirst( str_replace( array( '-', '_', '+' ), ' ', basename( $folder ) ) ) );
+                $paths[] = $folder . '/';
+            }
+        }
+        // a breadcrumb that leads round in a circle (A below B below A) is not followed
+        $this->known = array_fill_keys( $paths, true );
+        foreach ( array_keys( $this->breadcrumbParents ) as $path )
+        {
+            $seen = array( $path => true );
+            for ( $step = $this->parentPath( $path ), $n = 0; $step !== '' && $n < 200; $step = $this->parentPath( $step ), $n++ )
+            {
+                if ( isset( $seen[$step] ) )
+                {
+                    unset( $this->breadcrumbParents[$path] );
+                    break;
+                }
+                $seen[$step] = true;
+            }
+        }
         return $paths;
+    }
+
+    /**
+     * Every page after its parent, which a breadcrumb parent in the same folder may not be by the path order; the
+     * order is kept otherwise.
+     *
+     * @param array $paths
+     * @return array
+     */
+    protected function parentsFirst( array $paths )
+    {
+        if ( !$this->breadcrumbParents && !$this->groups )
+            return $paths;
+        $out = $done = array();
+        foreach ( $paths as $path )
+        {
+            $chain = array();
+            for ( $step = $path, $n = 0; $step !== '' && !isset( $done[$step] ) && $n < 200; $step = $this->parentPath( $step ), $n++ )
+                $chain[] = $step;
+            foreach ( array_reverse( $chain ) as $step )
+                if ( !isset( $done[$step] ) && isset( $this->known[$step] ) )
+                {
+                    $done[$step] = true;
+                    $out[] = $step;
+                }
+        }
+        return $out;
+    }
+
+    /**
+     * @param string $path
+     * @return bool whether the path is a group page (GroupFolders[])
+     */
+    public function isGroup( $path )
+    {
+        return isset( $this->groups[$path] );
+    }
+
+    /**
+     * A group page: a section made for a folder that has no page of its own.
+     *
+     * @param string $path
+     * @return array
+     */
+    protected function groupPage( $path )
+    {
+        $body = trim( (string)$this->rules->get( 'GroupBody', '' ) );
+        $page = array(
+            'path' => $path,
+            'title' => $this->groups[$path],
+            'body_html' => $body === '' ? '' : '<p>' . htmlspecialchars( str_replace( '{title}', $this->groups[$path], $body ), ENT_QUOTES, 'UTF-8' ) . '</p>',
+            'original_html' => '',
+            'meta' => array( 'labels' => array(), 'modified' => null ),
+            'hidden' => self::matchesAny( $path, $this->rules->getList( 'HiddenPaths' ) ),
+            'aliases' => array(),
+            'duplicate_candidate' => false,
+            'bylines' => array(),
+            'byline_failures' => array(),
+        );
+        $class = trim( (string)$this->rules->get( 'GroupClass', '' ) );
+        if ( $class !== '' )
+            $page['class_fixed'] = $class;
+        return $page;
+    }
+
+    /**
+     * @param string $html
+     * @return bool whether a file with a page suffix holds no HTML (a font, a gzip file)
+     */
+    protected function isBinary( $html )
+    {
+        $head = substr( (string)$html, 0, 4096 );
+        return strpos( $head, "\0" ) !== false || !preg_match( '/<\s*(?:!doctype|html|head|body|div|p|h[1-6]|title|meta|table|ul)\b/i', $head );
+    }
+
+    /**
+     * @param string $html
+     * @return string|null why the file is no page (binary, an error page of the export), null for a page
+     */
+    public function notAPage( $html )
+    {
+        if ( $this->rules->enabled( 'SkipBinaryPages', true ) && $this->isBinary( $html ) )
+            return 'not HTML';
+        if ( preg_match( '/<title>([^<]*)<\/title>/i', (string)$html, $t ) )
+        {
+            $title = trim( html_entity_decode( $t[1], ENT_QUOTES, 'UTF-8' ) );
+            foreach ( $this->rules->getList( 'NotFoundTitlePatterns' ) as $pattern )
+                if ( @preg_match( $pattern, $title ) )
+                    return 'an error page';
+        }
+        return null;
+    }
+
+    /**
+     * AssetPages: the media file a page only shows (one image or one link to a media file, no text of its own).
+     *
+     * @param DOMDocument $doc
+     * @param DOMElement $body the cleaned body
+     * @param string $path
+     * @return array|null array( path of the media file, alt text ) or null
+     */
+    protected function assetOfPage( DOMDocument $doc, DOMElement $body, $path )
+    {
+        $forced = self::matchesAny( $path, $this->rules->getList( 'AssetPagePaths' ) );
+        if ( !$forced && !$this->rules->enabled( 'AssetPages', false ) )
+            return null;
+        $suffixes = $this->rules->getList( 'AssetSuffixes' ) ?: array( 'png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'pdf', 'zip' );
+        $found = array();
+        $xpath = new DOMXPath( $doc );
+        foreach ( $xpath->query( './/img[@src] | .//a[@href]', $body ) as $element )
+        {
+            $target = expStaticImportDom::resolve( $path, $element->getAttribute( $element->nodeName === 'img' ? 'src' : 'href' ) );
+            if ( $target !== null && in_array( strtolower( pathinfo( $target, PATHINFO_EXTENSION ) ), $suffixes, true ) )
+                $found[$target] = $element;
+            else if ( $element->nodeName === 'a' && !$forced )
+                return null;
+        }
+        if ( count( $found ) !== 1 )
+            return null;
+        $element = reset( $found );
+        $target = key( $found );
+        $own = trim( preg_replace( '/\s+/u', ' ', str_replace( $element->textContent, '', $body->textContent ) ) );
+        if ( !$forced && mb_strlen( $own ) > (int)$this->rules->get( 'AssetPageMaxText', 0 ) )
+            return null;
+        $alt = $element->nodeName === 'img' ? trim( $element->getAttribute( 'alt' ) ?: $element->getAttribute( 'title' ) ) : trim( $element->textContent );
+        return array( $target, $alt );
     }
 
     public function parse( $source, $path )
     {
+        if ( isset( $this->groups[$path] ) )
+            return $this->groupPage( $path );
         $file = rtrim( $source, '/' ) . '/' . $path;
         $html = @file_get_contents( $file );
         if ( $html === false )
             throw new expStaticImportPageException( "cannot read $path" );
+        if ( $this->notAPage( $html ) !== null )
+            return null;
         $doc = expStaticImportDom::load( $html );
         $bodySelector = (string)$this->rules->get( 'BodySelector', 'body' );
         $body = expStaticImportDom::first( $doc, $bodySelector );
@@ -172,6 +407,11 @@ abstract class expStaticImportHtmlType implements expStaticImportTypeInterface
 
         $cleaner = new expStaticImportHtmlCleaner( $this->rules );
         $bodyHtml = $cleaner->clean( $doc, $body );
+
+        // the viewer of one media file (AssetPages): the file is imported as media, the page's path redirects to it
+        if ( $asset = $this->assetOfPage( $doc, $body, $path ) )
+            return array( 'path' => $path, 'title' => $title, 'body_html' => '', 'original_html' => '', 'meta' => $meta, 'hidden' => false,
+                          'aliases' => array(), 'asset_of' => $asset[0], 'asset_meta' => array( 'alt' => $asset[1] ) );
 
         if ( !isset( $meta['description'] ) )
         {
@@ -300,21 +540,38 @@ abstract class expStaticImportHtmlType implements expStaticImportTypeInterface
     }
 
     /**
-     * The parent of a page: the nearest ancestor folder's own page (<folder>.html next to the folder, or its index
-     * file), '' at the top.
+     * The parent of a page: the page its breadcrumb names (BreadcrumbSelector), else the nearest ancestor folder's own
+     * page (<folder>.html next to the folder, or its index file, or its group page), '' at the top.
      *
      * @param string $path
      * @return string
      */
     public function parentPath( $path )
     {
+        if ( isset( $this->breadcrumbParents[$path] ) )
+            return $this->breadcrumbParents[$path];
+        return $this->folderParent( $path );
+    }
+
+    /**
+     * The parent of a page by its folder alone.
+     *
+     * @param string $path
+     * @return string
+     */
+    protected function folderParent( $path )
+    {
         $indexFiles = $this->rules->getList( 'IndexFiles' ) ?: array( 'index.html' );
-        $dir = dirname( $path );
+        $dir = dirname( rtrim( $path, '/' ) );
         if ( in_array( basename( $path ), $indexFiles, true ) )
             $dir = dirname( $dir );
         while ( $dir !== '.' && $dir !== '' && $dir !== '/' )
         {
-            foreach ( array_merge( array( $dir . '.html' ), array_map( function ( $index ) use ( $dir ) { return $dir . '/' . $index; }, $indexFiles ) ) as $candidate )
+            $candidates = array( $dir . '.html' );
+            foreach ( $indexFiles as $index )
+                $candidates[] = $dir . '/' . $index;
+            $candidates[] = $dir . '/';
+            foreach ( $candidates as $candidate )
                 if ( $candidate !== $path && isset( $this->known[$candidate] ) )
                     return $candidate;
             $dir = dirname( $dir );

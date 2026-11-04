@@ -89,7 +89,7 @@ class expStaticImportTypeDocHtml extends expStaticImportHtmlType
         return $paths;
     }
 
-    public function parentPath( $path )
+    protected function folderParent( $path )
     {
         $dir = dirname( $path );
         while ( $this->folderPages && $dir !== '.' && $dir !== '' )
@@ -97,23 +97,24 @@ class expStaticImportTypeDocHtml extends expStaticImportHtmlType
             if ( isset( $this->folderPages[$dir] ) && $this->folderPages[$dir] !== $path )
             {
                 // the nearest ancestor with a page of its own by name wins over a farther folder page
-                $byName = parent::parentPath( $path );
+                $byName = parent::folderParent( $path );
                 if ( $byName === '' || strlen( dirname( $byName ) ) < strlen( $dir ) )
                     return $this->folderPages[$dir];
                 return $byName;
             }
             $dir = dirname( $dir );
         }
-        return parent::parentPath( $path );
+        return parent::folderParent( $path );
     }
 
     public function parse( $source, $path )
     {
+        if ( $this->isGroup( $path ) )
+            return parent::parse( $source, $path );
         $html = (string)@file_get_contents( rtrim( $source, '/' ) . '/' . $path );
-        // the export's error pages ("404 Not Found") are no pages
-        foreach ( $this->rules->getList( 'NotFoundTitlePatterns' ) as $pattern )
-            if ( preg_match( '/<title>([^<]*)<\/title>/i', $html, $t ) && @preg_match( $pattern, trim( $t[1] ) ) )
-                return null;
+        // the export's error pages ("404 Not Found", "kernel (20) / Error") and files that are no HTML are no pages
+        if ( $this->notAPage( $html ) !== null )
+            return null;
         // its redirect stubs ("Page has moved", a meta refresh) become a redirect to the page they point to
         if ( preg_match( '/<meta[^>]+http-equiv=["\']?refresh["\']?[^>]+content=["\']?\d+;\s*url=([^"\'>]+)/i', $html, $r ) )
         {
@@ -122,8 +123,8 @@ class expStaticImportTypeDocHtml extends expStaticImportHtmlType
                           'hidden' => false, 'aliases' => array(), 'redirect_to' => $target !== null ? $target : '' );
         }
         $page = parent::parse( $source, $path );
-        if ( $page === null )
-            return null;
+        if ( $page === null || isset( $page['asset_of'] ) )
+            return $page;
         $meta = $page['meta'];
         // the documentation site's own byline box (Written by, Last updated by, Maintainers) is read by the generic
         // byline rules (BylineSelectors[], BylineFields[]) in parent::parse(). Confluence: "Created by <a>A</a>, last modified by <a>B</a> on <date>" (or "Created and last modified by")

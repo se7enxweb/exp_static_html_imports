@@ -74,6 +74,9 @@ class expStaticImportEngine
     /** @var array asset path => true, the media the pages use */
     protected $assetPaths = array();
 
+    /** @var array asset path => what the page that showed it said of it (alt) */
+    protected $assetMeta = array();
+
     /** @var array page path => array of href => target path, links still to turn into node links */
     protected $pendingLinks = array();
 
@@ -131,6 +134,10 @@ class expStaticImportEngine
         $this->emit( 'source', array( 'source' => $this->source ) );
 
         $paths = $this->type->discover( $this->source );
+        // every page of the source is known when a page's parent is looked for, also in a run of only some paths
+        // (--path, --limit): a parent outside the run is still the parent, never the top
+        if ( method_exists( $this->type, 'setKnownPaths' ) )
+            $this->type->setKnownPaths( $paths );
         if ( $this->options['paths'] )
             $paths = array_values( array_filter( $paths, function ( $path ) {
                 return expStaticImportHtmlType::matchesAny( $path, (array)$this->options['paths'] );
@@ -159,8 +166,6 @@ class expStaticImportEngine
         }
         if ( $this->options['limit'] > 0 )
             $paths = array_slice( $paths, 0, (int)$this->options['limit'] );
-        if ( method_exists( $this->type, 'setKnownPaths' ) )
-            $this->type->setKnownPaths( $paths );
         $this->report['counts']['pages'] = count( $paths );
         $this->emit( 'discover', array( 'pages' => count( $paths ) ) );
 
@@ -189,7 +194,8 @@ class expStaticImportEngine
                     }
                     break;
                 case 'assets':
-                    $assets = array_keys( $this->assetPaths );
+                    // the media of the pages of this run, and those an interrupted run had found before it stopped
+                    $assets = array_keys( $this->assetPaths + (array)( isset( $this->state->data['pending_assets'] ) ? $this->state->data['pending_assets'] : array() ) );
                     sort( $assets );
                     for ( $i = $position, $n = count( $assets ); $i < $n; $i += $batch )
                     {
@@ -227,6 +233,7 @@ class expStaticImportEngine
         {
             $this->state->data['run'] = null;
             $this->state->data['pending_links'] = array();
+            $this->state->data['pending_assets'] = array();
             $this->state->addRun( array( 'id' => $run['id'], 'finished' => time(), 'seconds' => $this->report['seconds'], 'counts' => $this->report['counts'] ) );
             $this->state->save();
         }
@@ -234,6 +241,72 @@ class expStaticImportEngine
         $this->audit( 'system.staticimport_run.finish', array( 'run' => $run['id'], 'counts' => $this->report['counts'] ) );
         $this->emit( 'done', $this->report );
         return $this->report;
+    }
+
+    /**
+     * Hides the nodes of pages an earlier run imported that are no pages by the type's rules today (error pages,
+     * files that are no HTML, the viewers of one media file): exp:static-import:hide-non-pages. It reads the source as
+     * it is (no pull) and changes nothing but the visibility of those nodes: not the state file, so it is safe while a
+     * run of the type is going on, which may save the state at any time. The next run records them as removed and
+     * imports the media of the viewers. A node with visible children is left alone and reported.
+     *
+     * @param array $patterns shell patterns of the source paths to look at (empty: all)
+     * @param bool $dryRun only report
+     * @return array( 'checked' => n, 'hidden' => list, 'already_hidden' => n, 'kept' => list )
+     */
+    public function hideNonPages( array $patterns = array(), $dryRun = false )
+    {
+        $this->options['pull'] = false;
+        $this->source = $this->prepareSource();
+        $paths = $this->type->discover( $this->source );
+        if ( method_exists( $this->type, 'setKnownPaths' ) )
+            $this->type->setKnownPaths( $paths );
+        $out = array( 'checked' => 0, 'hidden' => array(), 'already_hidden' => 0, 'kept' => array() );
+        foreach ( $this->state->data['pages'] as $path => $entry )
+        {
+            $path = (string)$path;
+            if ( empty( $entry['node_id'] ) || strpos( $path, '#' ) !== false || ( isset( $entry['status'] ) && in_array( $entry['status'], array( 'removed', 'duplicate' ), true ) ) )
+                continue;
+            if ( $patterns && !expStaticImportHtmlType::matchesAny( $path, $patterns ) )
+                continue;
+            if ( method_exists( $this->type, 'isGroup' ) && $this->type->isGroup( $path ) )
+                continue;
+            $out['checked']++;
+            try
+            {
+                $page = is_file( $this->source . '/' . $path ) ? $this->type->parse( $this->source, $path ) : array();
+            }
+            catch ( Throwable $e )
+            {
+                continue;
+            }
+            if ( $page !== null && !isset( $page['asset_of'] ) )
+                continue;
+            $why = $page === null ? 'no page' : 'the viewer of ' . $page['asset_of'];
+            $node = eZContentObjectTreeNode::fetch( (int)$entry['node_id'] );
+            if ( !$node instanceof eZContentObjectTreeNode )
+                continue;
+            if ( (int)$node->attribute( 'is_hidden' ) )
+            {
+                $out['already_hidden']++;
+                continue;
+            }
+            $children = (int)$node->subTreeCount( array( 'Limitation' => array(), 'IgnoreVisibility' => false, 'Depth' => 1, 'DepthOperator' => 'eq' ) );
+            $line = array( 'path' => $path, 'node_id' => (int)$node->attribute( 'node_id' ), 'name' => (string)$node->attribute( 'name' ), 'why' => $why );
+            if ( $children > 0 )
+            {
+                $out['kept'][] = $line + array( 'children' => $children );
+                continue;
+            }
+            if ( !$dryRun )
+            {
+                eZContentObjectTreeNode::hideSubTree( $node );
+                eZContentCacheManager::clearContentCacheIfNeeded( (int)$node->attribute( 'contentobject_id' ) );
+                $this->audit( 'system.staticimport_page.hide', array( 'path' => $path, 'node' => (int)$node->attribute( 'node_id' ), 'why' => $why ) );
+            }
+            $out['hidden'][] = $line;
+        }
+        return $out;
     }
 
     /**
@@ -308,6 +381,23 @@ class expStaticImportEngine
                 $this->retire( $path, 'a redirect' );
                 if ( !$this->options['dry_run'] && $page['redirect_to'] !== '' )
                     $this->state->setPage( $path, array( 'status' => 'duplicate', 'duplicate_of' => $page['redirect_to'], 'redirected' => false ) );
+                return;
+            }
+            if ( isset( $page['asset_of'] ) )
+            {
+                // the viewer of one media file (AssetPages): never a page. The file becomes a media object in the
+                // assets phase, and the page's path redirects to it; a page an earlier run made for it is hidden
+                $asset = (string)$page['asset_of'];
+                $this->report['counts']['asset_pages'] = ( isset( $this->report['counts']['asset_pages'] ) ? $this->report['counts']['asset_pages'] : 0 ) + 1;
+                $this->retire( $path, 'the viewer of the media file ' . $asset );
+                $this->assetPaths[$asset] = true;
+                if ( !empty( $page['asset_meta'] ) )
+                    $this->assetMeta[$asset] = (array)$page['asset_meta'];
+                if ( !$this->options['dry_run'] )
+                {
+                    $this->state->data['pending_assets'][$asset] = true;
+                    $this->state->setPage( $path, array( 'status' => 'duplicate', 'duplicate_of' => $asset, 'redirected' => false, 'asset_page' => true ) );
+                }
                 return;
             }
             // RootPage: one source page (e.g. index.html) is the content of the import's top node itself, written into
@@ -492,7 +582,7 @@ class expStaticImportEngine
         $this->seenHashes[$sourceHash] = $path;
 
         foreach ( $this->type->assets( $page ) as $asset )
-            $this->assetPaths[$asset] = true;
+            $this->assetPaths[$asset] = $this->state->data['pending_assets'][$asset] = true;
 
         $parentNode = $page['parent_path'] !== '' ? $this->state->nodeOf( $page['parent_path'] ) : $this->parentNode();
         if ( !$parentNode )
@@ -742,6 +832,8 @@ class expStaticImportEngine
         }
         $title = ucfirst( str_replace( array( '-', '_' ), ' ', pathinfo( $path, PATHINFO_FILENAME ) ) );
         $fields = array( 'file' => $file, 'title' => $title, 'alt' => $title, 'caption' => '', 'credit' => '', 'source_path' => $path );
+        if ( !empty( $this->assetMeta[$path]['alt'] ) )
+            $fields['alt'] = (string)$this->assetMeta[$path]['alt'];
         $attributes = array();
         foreach ( $this->rules->getHash( 'AssetAttributeMap' ) as $key => $field )
         {
@@ -790,7 +882,8 @@ class expStaticImportEngine
             $link = self::nameElementID( $node );
             if ( !$link )
                 continue;
-            foreach ( array_unique( array( preg_replace( '/\.html?$/i', '', $path ), $path ) ) as $old )
+            // a group page ("display/EZP/") answers for its folder's old address ("display/EZP")
+            foreach ( array_unique( substr( $path, -1 ) === '/' ? array( rtrim( $path, '/' ) ) : array( preg_replace( '/\.html?$/i', '', $path ), $path ) ) as $old )
             {
                 // a path with a view parameter, such as .../(language)/eng-GB, is no address the site can answer
                 if ( strpos( $old, '(' ) !== false || strpos( $old, '#' ) !== false )

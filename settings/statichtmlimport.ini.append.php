@@ -42,6 +42,13 @@ TypeList[sitemap-crawl]=expStaticImportTypeSitemapCrawl
 # HTML types: Suffixes[] IndexFiles[] TitleSelector BodySelector OriginalSelector RemoveTitleFromBody MetaSelectors[]
 #   PageIdPatterns[] TitleSuffixPatterns[] RemoveSelectors[] UnwrapSelectors[] PanelSelectors[<type>] CodeSelectors[]
 #   CodeLineSelector CodeLanguagePatterns[] ExpandSelectors[] ExpandTitleSelector ChildrenSelectors[] AssetSuffixes[]
+# Where a page goes when its folder says nothing (flat exports such as Confluence's display/<SPACE>/):
+#   BreadcrumbSelector BreadcrumbPaths[]   the nearest page of a page's breadcrumb links is its parent
+#   GroupFolders[] GroupTitles[<folder>] GroupTitleSelector GroupClass GroupBody   a section page for each matching
+#                                     folder that has no page of its own, the parent of the pages left without one
+# What is no page: NotFoundTitlePatterns[] (error pages by <title>), SkipBinaryPages (default enabled: files with a
+#   page suffix that are no HTML), AssetPages AssetPageMaxText AssetPagePaths[] (the viewer of one image or file is
+#   that media file: it is imported as media and the viewer's path redirects to it)
 # ---------------------------------------------------------------------------------------------------------------------
 
 [Type_html-generic]
