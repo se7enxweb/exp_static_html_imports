@@ -101,3 +101,52 @@ No two pages of one name below one parent: `SiblingNames=unique` (the default) g
 `SiblingNameSuffix` (default `({n})`, a counter from 2; it may use `{page_id}` and the `RouteMeta[]` values, and gets
 the counter as well when it is taken too), `refuse` skips the page (failed, "needs review"), `warn` only reports it,
 `off` turns the check off. Each renaming is listed in the report's warnings, and counted as `renamed`.
+
+## The top of the tree, products and fixed parents
+
+- `TopParentRules[]=<shell pattern>;<parent path>`: where a page goes that would be a top page. The first match wins;
+  an empty parent keeps it at the top. A last line `**;<page>` keeps the top small: only the pages named before it stay.
+- `ParentRules[]=<shell pattern>;<parent path>`: a fixed parent before every other rule (a space below its product).
+- `VirtualPages[<path>/]=<class>;<title>;<short title>;<HTML file>`: a section page the source does not have, such as a
+  product's landing page; the short title is its address, the file (below the installation's root) its text. It also
+  gives new values to a group page.
+- `RetiredParent`: where `route --all` puts the hidden leftovers of earlier runs at the top.
+
+## Titles, headings and links
+
+- `TitleSelectorScope=document`: each alternative of `TitleSelector` in its order, in the whole page, so a heading
+  outside the body (Confluence's `#title-text`) wins over the first heading of the text.
+- `NormalizeHeadings` (disabled by default): the highest heading of the text becomes the first level.
+- `CopyOfPatterns[]`: regular expressions on the path whose first group is the address of the page it copies (a view
+  parameter such as `.../(language)/eng-GB.html`): always a redirect to that page.
+- Links: an address without a suffix goes to its page, a link with `pageId=` to the page with that page id, a full URL
+  of a host of `LinkHosts[]` to its path.
+
+## Comments
+
+`CommentsSelector` (the old manual pages' `#comments-content`) and `ConfluenceCommentsSelector` (Confluence's
+`#page-comments`) read the readers' comments; each becomes a page of `CommentClass` below its page, a reply below the
+comment it answers, with its author (a contributor, and as written), its date, its id, the id of the comment it
+answers, its address and its own markup. `ClassChange=replace` (the default) hides an object whose class the rules
+changed and makes a new one. `CommentMarkers[]` name the text that marks a page with comments, for
+`relink --comments`.
+
+## Git authors
+
+`GitAuthors=enabled` keeps the history of `SourceRepository` (a bare clone without file contents, `history.git` in the
+work folder). For the pages of `GitAuthorPaths[]` every author of a commit is a contributor; where the source names
+nobody, the first author is the writer and the last the updater, with the dates of the commits. `GitAuthorMap[<e-mail
+or name>]=<name>` joins several identities into one person (only the name is shown), `GitAuthorSkip[]` leaves bots out.
+
+## Console steps beside a run
+
+They never write the state file (a running import would save over it): what the next run must know goes into a state
+patch in `state-patches/` of the work folder, which that run merges first.
+
+| Command | What it does |
+|---|---|
+| `exp:static-import:route --type=<label> [--all]` | routed pages into their containers; with `--all` every page below the parent the rules give it today |
+| `exp:static-import:relink --type=<label> [--comments]` | pages whose static links can be resolved now, or every page with comments, imported again |
+| `exp:static-import:hide-non-pages --type=<label>` | hides imported pages that are no pages today (error pages, binary files, viewers, copies, excluded) |
+| `exp:static-import:bylines --type=<label> [--fill [--replace-roles]]` | the no-data-loss audit of the bylines, and the fill |
+| `exp:static-import:comments --type=<label>` | the no-data-loss audit of the comments |
