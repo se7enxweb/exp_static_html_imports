@@ -1222,6 +1222,10 @@ class expStaticImportEngine
         {
             // the hash is taken over the attributes the import wrote then, so a changed attribute map is no edit
             $writtenHash = $previous && isset( $previous['written_hash'] ) ? $previous['written_hash'] : '';
+            // a hash written for another object (the page an earlier run made before RootPage put it into the top
+            // node) says nothing of this one: it is no edit
+            if ( $previous && !empty( $previous['object_id'] ) && (int)$previous['object_id'] !== (int)$object->attribute( 'id' ) )
+                $writtenHash = '';
             $writtenFields = $previous && !empty( $previous['written_fields'] ) ? (array)$previous['written_fields'] : array_keys( $attributes );
             $edited = $writtenHash !== '' && $this->contentHash( $object, $writtenFields ) !== $writtenHash;
             if ( $edited && !$this->options['overwrite_flagged'] )
@@ -1236,7 +1240,8 @@ class expStaticImportEngine
             $before = $previous && isset( $previous['unresolved'] ) ? (array)$previous['unresolved'] : array();
             if ( !$isRoot )
                 $this->moveIfNeeded( $object, $parentNode, $path );
-            if ( $previous && isset( $previous['source_hash'] ) && $previous['source_hash'] === $sourceHash && !array_diff( $before, $unresolved ) && !$edited )
+            if ( $previous && isset( $previous['source_hash'] ) && $previous['source_hash'] === $sourceHash && !array_diff( $before, $unresolved ) && !$edited
+                 && ( empty( $previous['object_id'] ) || (int)$previous['object_id'] === (int)$object->attribute( 'id' ) ) )
             {
                 $this->report['counts']['unchanged']++;
                 $this->state->setPage( $path, array( 'status' => 'unchanged' ) );
