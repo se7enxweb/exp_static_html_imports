@@ -49,12 +49,77 @@ class expStaticImportTypeDocHtml extends expStaticImportHtmlType
         parent::configure( new expStaticImportRules( $rules->type(), $values ) );
     }
 
+    /** @var array folder path => the page that is that folder's own page (its table of contents) */
+    protected $folderPages = array();
+
+    /**
+     * The export renamed the version pages (Technical-manual/4.html is the page of the folder 4.7/, 3-5.html the one
+     * of 3.6/). For the pages of FolderPagePatterns[], the folder their links point into most is the folder they stand
+     * for; parentPath() then puts that folder's pages below them.
+     */
+    public function discover( $source )
+    {
+        $paths = parent::discover( $source );
+        $patterns = $this->rules->getList( 'FolderPagePatterns' );
+        if ( $patterns )
+        {
+            $known = array_fill_keys( $paths, true );
+            foreach ( $paths as $path )
+            {
+                if ( !self::matchesAny( $path, $patterns ) )
+                    continue;
+                $html = (string)@file_get_contents( rtrim( $source, '/' ) . '/' . $path );
+                if ( !preg_match_all( '/href="([^"\/:#?]+)\//', $html, $m ) )
+                    continue;
+                $counts = array_count_values( $m[1] );
+                arsort( $counts );
+                $dir = dirname( $path );
+                foreach ( $counts as $folder => $count )
+                {
+                    $folderPath = ( $dir === '.' ? '' : $dir . '/' ) . $folder;
+                    // a folder that has its own page under its own name keeps that one
+                    if ( $folder !== '(language)' && !isset( $known[$folderPath . '.html'] ) && !isset( $this->folderPages[$folderPath] ) && is_dir( rtrim( $source, '/' ) . '/' . $folderPath ) )
+                    {
+                        $this->folderPages[$folderPath] = $path;
+                        break;
+                    }
+                }
+            }
+        }
+        return $paths;
+    }
+
+    public function parentPath( $path )
+    {
+        $dir = dirname( $path );
+        while ( $this->folderPages && $dir !== '.' && $dir !== '' )
+        {
+            if ( isset( $this->folderPages[$dir] ) && $this->folderPages[$dir] !== $path )
+            {
+                // the nearest ancestor with a page of its own by name wins over a farther folder page
+                $byName = parent::parentPath( $path );
+                if ( $byName === '' || strlen( dirname( $byName ) ) < strlen( $dir ) )
+                    return $this->folderPages[$dir];
+                return $byName;
+            }
+            $dir = dirname( $dir );
+        }
+        return parent::parentPath( $path );
+    }
+
     public function parse( $source, $path )
     {
         $page = parent::parse( $source, $path );
         if ( $page === null )
             return null;
         $meta = $page['meta'];
+        $folder = array_search( $path, $this->folderPages, true );
+        if ( $folder !== false )
+        {
+            $meta['version'] = basename( $folder );
+            if ( in_array( $page['title'], $this->rules->getList( 'GenericTitles' ), true ) )
+                $page['title'] = basename( $folder );
+        }
         // ".attribute-byline": "<author> - <date>" in the old documentation; split when the selector caught both
         if ( isset( $meta['byline'] ) )
         {
@@ -81,7 +146,7 @@ class expStaticImportTypeDocHtml extends expStaticImportHtmlType
         }
         if ( empty( $meta['page_id'] ) && preg_match( '/viewpage(\d+)\.html$/', $path, $m ) )
             $meta['page_id'] = $m[1];
-        if ( preg_match( '#/(\d+(?:[.-]\d+)*(?:\.x)?)(?:/|\.html$)#', $path, $m ) )
+        if ( empty( $meta['version'] ) && preg_match( '#/(\d+(?:[.-]\d+)*(?:\.x)?)(?:/|\.html$)#', $path, $m ) )
             $meta['version'] = str_replace( '-', '.', $m[1] );
         $page['meta'] = $meta;
         $page['children'] = $this->comments( $source, $path );

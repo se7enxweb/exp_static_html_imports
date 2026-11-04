@@ -331,6 +331,7 @@ class expStaticImportEngine
             }
             // unchanged: the same source, and no link that was unresolved before can be resolved now
             $before = $previous && isset( $previous['unresolved'] ) ? (array)$previous['unresolved'] : array();
+            $this->moveIfNeeded( $object, $parentNode, $path );
             if ( $previous && isset( $previous['source_hash'] ) && $previous['source_hash'] === $sourceHash && !array_diff( $before, $unresolved ) && !$edited )
             {
                 $this->report['counts']['unchanged']++;
@@ -399,6 +400,29 @@ class expStaticImportEngine
             $child['child_of'] = isset( $page['child_of'] ) ? $page['child_of'] : $path;
             $this->importParsedPage( $this->type->map( $child ), $user );
         }
+    }
+
+    /**
+     * An imported page whose parent in the source changed (or was wrong in an earlier run) moves to its parent.
+     *
+     * @param eZContentObject $object
+     * @param int $parentNode
+     * @param string $path
+     */
+    protected function moveIfNeeded( eZContentObject $object, $parentNode, $path )
+    {
+        $node = $object->attribute( 'main_node' );
+        if ( !$node instanceof eZContentObjectTreeNode || !$parentNode || (int)$node->attribute( 'parent_node_id' ) === (int)$parentNode )
+            return;
+        if ( $this->options['dry_run'] )
+            return;
+        if ( eZContentObjectTreeNodeOperations::move( (int)$node->attribute( 'node_id' ), (int)$parentNode ) )
+        {
+            $this->report['counts']['moved'] = isset( $this->report['counts']['moved'] ) ? $this->report['counts']['moved'] + 1 : 1;
+            eZContentObject::clearCache( array( (int)$object->attribute( 'id' ) ) );
+        }
+        else
+            $this->report['warnings'][] = "$path could not be moved below node $parentNode";
     }
 
     /**
