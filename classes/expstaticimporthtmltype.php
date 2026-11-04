@@ -145,6 +145,9 @@ abstract class expStaticImportHtmlType implements expStaticImportTypeInterface
             if ( $node && trim( $node->getAttribute( 'content' ) ) !== '' )
                 $meta[$name] = trim( $node->getAttribute( 'content' ) );
         }
+        // a site-wide default description (IgnoreDescriptions[]) is no description of the page: the first paragraph is
+        if ( isset( $meta['description'] ) && in_array( $meta['description'], $this->rules->getList( 'IgnoreDescriptions' ), true ) )
+            unset( $meta['description'] );
         if ( isset( $meta['keywords'] ) )
             $meta['keywords'] = array_values( array_filter( array_map( 'trim', explode( ',', $meta['keywords'] ) ) ) );
         if ( isset( $meta['modified'] ) && !ctype_digit( (string)$meta['modified'] ) )

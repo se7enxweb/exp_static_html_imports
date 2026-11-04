@@ -475,7 +475,9 @@ class expStaticImportEngine
         $path = $page['path'];
         // the pages a page carries (its comments) count too, so a new comment brings its page up again
         $sourceHash = sha1( $page['class'] . "\0" . $page['title'] . "\0" . $page['body_html'] . "\0"
-                             . ( empty( $page['children'] ) ? '' : md5( json_encode( $page['children'] ) ) ) );
+                             . ( empty( $page['children'] ) ? '' : md5( json_encode( $page['children'] ) ) )
+                             // and the values the rules give it, so a changed rule (a version status, a field) reaches it
+                             . "\0" . md5( json_encode( isset( $page['attributes'] ) ? $page['attributes'] : array() ) ) );
         $previous = $this->state->page( $path );
 
         // the same content under another path: one node, this path redirects to it

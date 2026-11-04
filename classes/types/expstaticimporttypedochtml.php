@@ -78,7 +78,7 @@ class expStaticImportTypeDocHtml extends expStaticImportHtmlType
                 {
                     $folderPath = ( $dir === '.' ? '' : $dir . '/' ) . $folder;
                     // a folder that has its own page under its own name keeps that one
-                    if ( $folder !== '(language)' && !isset( $known[$folderPath . '.html'] ) && !isset( $this->folderPages[$folderPath] ) && is_dir( rtrim( $source, '/' ) . '/' . $folderPath ) )
+                    if ( $folder !== '(language)' && $folder !== '.' && $folder !== '..' && !isset( $known[$folderPath . '.html'] ) && !isset( $this->folderPages[$folderPath] ) && is_dir( rtrim( $source, '/' ) . '/' . $folderPath ) )
                     {
                         $this->folderPages[$folderPath] = $path;
                         break;
@@ -268,6 +268,14 @@ class expStaticImportTypeDocHtml extends expStaticImportHtmlType
     {
         $fields = parent::fields( $page );
         $fields['version'] = isset( $page['meta']['version'] ) ? (string)$page['meta']['version'] : '';
+        // VersionStatus[<shell pattern of the version>]=<status>: the first match wins (e.g. 6*=current, 3*=EOL)
+        $fields['version_status'] = '';
+        foreach ( $this->rules->getHash( 'VersionStatus' ) as $pattern => $status )
+            if ( $fields['version'] !== '' && fnmatch( (string)$pattern, $fields['version'] ) )
+            {
+                $fields['version_status'] = (string)$status;
+                break;
+            }
         $fields['modifier'] = isset( $page['meta']['modifier'] ) ? (string)$page['meta']['modifier'] : '';
         $fields['created'] = isset( $page['meta']['created'] ) ? (string)(int)$page['meta']['created'] : '';
         return $fields;
