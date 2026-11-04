@@ -126,6 +126,7 @@ class expStaticImportEngine
         $this->audit( 'system.staticimport_run.start', array( 'run' => $run['id'], 'resumed' => $resume ) );
 
         $user = $this->actAs();
+        $deferred = $this->deferWork();
         $this->source = $this->prepareSource();
         $this->emit( 'source', array( 'source' => $this->source ) );
 
@@ -219,6 +220,7 @@ class expStaticImportEngine
             }
         }
 
+        $this->finishDeferredWork( $deferred );
         $this->report['seconds'] = round( microtime( true ) - $started, 1 );
         $this->report['finished'] = date( 'c' );
         if ( !$this->options['dry_run'] )
@@ -232,6 +234,54 @@ class expStaticImportEngine
         $this->audit( 'system.staticimport_run.finish', array( 'run' => $run['id'], 'counts' => $this->report['counts'] ) );
         $this->emit( 'done', $this->report );
         return $this->report;
+    }
+
+    /**
+     * Work a publish does for every object that an import can do once at the end, which keeps a large import fast:
+     * - DeferIndexing (default enabled): objects are queued for the search index (site.ini [SearchSettings]
+     *   DelayedIndexing=enabled for this run), indexed by the cronjob indexcontent instead of during the publish;
+     * - DeferViewCacheClearing (default enabled): the view caches are not cleared object by object (site.ini
+     *   [ContentSettings] ViewCaching=disabled for this run); the whole content view cache is cleared once at the end.
+     * Only this process changes; the settings files stay as they are.
+     *
+     * @return array what was deferred
+     */
+    protected function deferWork()
+    {
+        $deferred = array();
+        if ( $this->options['dry_run'] )
+            return $deferred;
+        $site = eZINI::instance( 'site.ini' );
+        if ( $this->rules->enabled( 'DeferIndexing', true ) && $site->variable( 'SearchSettings', 'DelayedIndexing' ) !== 'enabled' )
+        {
+            $deferred['indexing'] = $site->variable( 'SearchSettings', 'DelayedIndexing' );
+            $site->setVariable( 'SearchSettings', 'DelayedIndexing', 'enabled' );
+        }
+        if ( $this->rules->enabled( 'DeferViewCacheClearing', true ) && $site->variable( 'ContentSettings', 'ViewCaching' ) === 'enabled' )
+        {
+            $deferred['view_cache'] = 'enabled';
+            $site->setVariable( 'ContentSettings', 'ViewCaching', 'disabled' );
+        }
+        return $deferred;
+    }
+
+    /**
+     * @param array $deferred what deferWork() changed: put back, and the view cache cleared once
+     */
+    protected function finishDeferredWork( array $deferred )
+    {
+        $site = eZINI::instance( 'site.ini' );
+        if ( isset( $deferred['indexing'] ) )
+        {
+            $site->setVariable( 'SearchSettings', 'DelayedIndexing', $deferred['indexing'] );
+            $this->report['warnings'][] = 'the search index is brought up to date by the cronjob indexcontent (the objects were queued)';
+        }
+        if ( isset( $deferred['view_cache'] ) )
+        {
+            $site->setVariable( 'ContentSettings', 'ViewCaching', $deferred['view_cache'] );
+            if ( $this->report['counts']['created'] + $this->report['counts']['updated'] > 0 )
+                eZContentCacheManager::clearAllContentCache( true );
+        }
     }
 
     /**
@@ -259,6 +309,13 @@ class expStaticImportEngine
                 if ( !$this->options['dry_run'] && $page['redirect_to'] !== '' )
                     $this->state->setPage( $path, array( 'status' => 'duplicate', 'duplicate_of' => $page['redirect_to'], 'redirected' => false ) );
                 return;
+            }
+            // RootPage: one source page (e.g. index.html) is the content of the import's top node itself, written into
+            // that object with its own class, never a page of its own
+            if ( $this->isRootPage( $path ) && ( $root = $this->rootObject() ) )
+            {
+                $page['class_fixed'] = (string)$root->attribute( 'class_identifier' );
+                $page['parent_fixed'] = '';
             }
             $page = $this->type->map( $page );
         }
@@ -340,6 +397,47 @@ class expStaticImportEngine
     }
 
     /**
+     * @param string $path
+     * @return bool whether the path is the RootPage of the type
+     */
+    protected function isRootPage( $path )
+    {
+        $root = trim( (string)$this->rules->get( 'RootPage', '' ) );
+        return $root !== '' && $root === $path;
+    }
+
+    /**
+     * @return eZContentObject|null the object of the import's top node (ParentNode or ParentRemoteID)
+     */
+    protected function rootObject()
+    {
+        $node = eZContentObjectTreeNode::fetch( $this->parentNode() );
+        return $node instanceof eZContentObjectTreeNode ? $node->object() : null;
+    }
+
+    /**
+     * Hides an object made by an earlier run that is no longer a page of its own (trashed with --apply-removals).
+     *
+     * @param eZContentObject $object
+     * @param string $path
+     */
+    protected function retireObject( eZContentObject $object, $path )
+    {
+        $node = $object->attribute( 'main_node' );
+        if ( !$node instanceof eZContentObjectTreeNode )
+            return;
+        $this->report['counts']['removed']++;
+        $this->report['removed'][] = array( 'path' => $path, 'node_id' => (int)$node->attribute( 'node_id' ), 'reason' => 'merged into the top node', 'trashed' => (bool)$this->options['apply_removals'] );
+        if ( $this->options['apply_removals'] )
+            eZContentObjectTreeNode::removeSubtrees( array( (int)$node->attribute( 'node_id' ) ), true );
+        else if ( !(int)$node->attribute( 'is_hidden' ) )
+            eZContentObjectTreeNode::hideSubTree( $node );
+        // the old object gives up the page's remote id, so the page is the top node from now on
+        $object->setAttribute( 'remote_id', $object->attribute( 'remote_id' ) . '-retired' );
+        $object->store();
+    }
+
+    /**
      * A path that is no longer a page of its own (an error page, a redirect stub): the node an earlier run made for it
      * is hidden (moved to the trash with --apply-removals).
      *
@@ -414,6 +512,15 @@ class expStaticImportEngine
 
         $remoteID = self::remoteID( $this->label, $path );
         $object = eZContentObject::fetchByRemoteID( $remoteID );
+        $isRoot = $this->isRootPage( $path ) && ( $root = $this->rootObject() );
+        if ( $isRoot )
+        {
+            // a page an earlier run made for the root page goes (hidden, or trashed with --apply-removals); its address
+            // then redirects to the top node like every old path
+            if ( $object instanceof eZContentObject && (int)$object->attribute( 'id' ) !== (int)$root->attribute( 'id' ) && !$this->options['dry_run'] )
+                $this->retireObject( $object, $path );
+            $object = $root;
+        }
 
         if ( $this->options['dry_run'] )
         {
@@ -437,7 +544,8 @@ class expStaticImportEngine
             }
             // unchanged: the same source, and no link that was unresolved before can be resolved now
             $before = $previous && isset( $previous['unresolved'] ) ? (array)$previous['unresolved'] : array();
-            $this->moveIfNeeded( $object, $parentNode, $path );
+            if ( !$isRoot )
+                $this->moveIfNeeded( $object, $parentNode, $path );
             if ( $previous && isset( $previous['source_hash'] ) && $previous['source_hash'] === $sourceHash && !array_diff( $before, $unresolved ) && !$edited )
             {
                 $this->report['counts']['unchanged']++;
