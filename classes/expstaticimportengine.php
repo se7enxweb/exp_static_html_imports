@@ -616,6 +616,9 @@ class expStaticImportEngine
                 continue;
             foreach ( array_unique( array( preg_replace( '/\.html?$/i', '', $path ), $path ) ) as $old )
             {
+                // a path with a view parameter, such as .../(language)/eng-GB, is no address the site can answer
+                if ( strpos( $old, '(' ) !== false || strpos( $old, '#' ) !== false )
+                    continue;
                 $old = ( $prefix !== '' ? $prefix . '/' : '' ) . $old;
                 $result = eZURLAliasML::storePath( $old, 'eznode:' . $node, $this->language() ?: false, $link, true, false, false, false, false, true );
                 if ( isset( $result['status'] ) && $result['status'] === true )
