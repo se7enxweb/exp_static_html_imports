@@ -110,10 +110,33 @@ unique. An object a class change replaced (remote id `<id>-was-<class>`) takes n
 - `TopParentRules[]=<shell pattern>;<parent path>`: where a page goes that would be a top page. The first match wins;
   an empty parent keeps it at the top. A last line `**;<page>` keeps the top small: only the pages named before it stay.
 - `ParentRules[]=<shell pattern>;<parent path>`: a fixed parent before every other rule (a space below its product).
+  The parent may take the values of the page's path: `{file}` (the last part without its page suffix), `{dir}`,
+  `{seg1}`, `{seg2}` ... and `{folder}` (the version folder a renamed version page stands for: `4.7` for
+  `Technical-manual/4.html`). A parent ending in `/` that is no page of the source is made as a container by
+  `RouteContainers[]`; `@<remote id>` is a node outside the import (the media folder). A rule whose placeholders have
+  no value is passed over. For example, every version page in a container of its version:
+
+      ParentRules[]=Exponential/*/[0-9]*.html;Exponential/{folder}/
+      RouteContainers[Exponential/*]=exp_doc_version;{folder};{folder};version={folder}
+      ParentRules[]=Media/**;@exp-doc-media
+
+- `RouteContainers[<container path>]=<class>;<title pattern>[;<short title pattern>[;<key>=<pattern>,...]]`: the short
+  title is the container's address; the `key=pattern` pairs are values of the container page (`version={folder}`
+  fills the field `version` that `AttributeMap[]` can use).
+- `NameRules[]=<shell pattern>;<title pattern>[;<short title pattern>]`: the title (and the address) a page gets
+  instead of its own, first match wins, with the values of its path, `{title}` (its own title) and its meta values
+  (`{page_id}`). A routed page keeps its route's name. For example `Exponential/Technical-manual/[0-9]*.html;Technical
+  manual {folder};Technical manual` names a version page "Technical manual 4.7" at `/exponential/4.7/technical-manual`.
+- `GroupShortTitles[<shell pattern of a folder>]=<pattern>`: the short title (the address) of a group page, such as
+  `display/*={file}` for a Confluence space addressed by its key.
 - `VirtualPages[<path>/]=<class>;<title>;<short title>;<HTML file>`: a section page the source does not have, such as a
   product's landing page; the short title is its address, the file (below the installation's root) its text. It also
   gives new values to a group page.
 - `RetiredParent`: where `route --all` puts the hidden leftovers of earlier runs at the top.
+- `RetiredRules[]=<shell pattern of the source path>;<container path>[;<name pattern>[;<regular expression on the
+  name>]]`: where `route --all` puts a leftover at the top, or an error page an earlier run imported as a page (a rule
+  with a name check: `/^Page Not Found\b/`), hidden, with a name of the pattern (`{title}: {file}`) unique there; the
+  others go into `RetiredParent`.
 
 ## Titles, headings and links
 
@@ -155,7 +178,7 @@ patch in `state-patches/` of the work folder, which that run merges first.
 
 | Command | What it does |
 |---|---|
-| `exp:static-import:route --type=<label> [--all]` | routed pages into their containers; with `--all` every page below the parent the rules give it today |
+| `exp:static-import:route --type=<label> [--all] [--batch=<n>] [--resume] [--limit=<n>]` | routed pages into their containers; with `--all` every page below the parent the rules give it today, named by `NameRules[]`, copies and leftovers retired; node ids are kept and old addresses redirect; a progress line and a cursor every n pages, `--resume` continues |
 | `exp:static-import:relink --type=<label> [--comments]` | pages whose static links can be resolved now, or every page with comments, imported again |
 | `exp:static-import:hide-non-pages --type=<label>` | hides imported pages that are no pages today (error pages, binary files, viewers, copies, excluded) |
 | `exp:static-import:bylines --type=<label> [--fill [--replace-roles]]` | the no-data-loss audit of the bylines, and the fill |

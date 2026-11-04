@@ -53,11 +53,26 @@ Ordners. Manche Exporte sind jedoch flach: Confluence speichert jede Seite eines
   Treffer gilt; ein leerer Elternpfad lässt sie oben. Eine letzte Zeile `**;<Seite>` hält die Spitze klein: nur die
   davor genannten Seiten bleiben oben.
 - `ParentRules[]=<Shell-Muster>;<Elternpfad>`: eine feste Elternseite vor jeder anderen Regel (ein Bereich unter seinem
-  Produkt).
+  Produkt). Der Elternpfad kann Werte des Pfads der Seite enthalten: `{file}` (der letzte Teil ohne Endung), `{dir}`,
+  `{seg1}`, `{seg2}` ... und `{folder}` (der Versionsordner, für den eine umbenannte Versionsseite steht: `4.7` für
+  `Technical-manual/4.html`). Ein Elternpfad mit `/` am Ende, der keine Seite der Quelle ist, wird als Container von
+  `RouteContainers[]` angelegt; `@<Remote-ID>` ist ein Knoten außerhalb des Imports (der Medienordner). Eine Regel,
+  deren Platzhalter keinen Wert haben, wird übergangen.
+- `RouteContainers[<Containerpfad>]=<Klasse>;<Titelmuster>[;<Kurztitelmuster>[;<Schlüssel>=<Muster>,...]]`: der Kurztitel
+  ist die Adresse des Containers; die Paare `Schlüssel=Muster` sind Werte der Containerseite (`version={folder}`).
+- `NameRules[]=<Shell-Muster>;<Titelmuster>[;<Kurztitelmuster>]`: der Titel (und die Adresse), den eine Seite statt
+  ihres eigenen bekommt; der erste Treffer gilt, mit den Werten ihres Pfads, `{title}` und ihren Metawerten
+  (`{page_id}`). Eine geroutete Seite behält den Namen ihrer Route.
+- `GroupShortTitles[<Shell-Muster eines Ordners>]=<Muster>`: der Kurztitel (die Adresse) einer Gruppenseite, etwa
+  `display/*={file}` für einen Confluence-Bereich unter seinem Schlüssel.
 - `VirtualPages[<Pfad>/]=<Klasse>;<Titel>;<Kurztitel>;<HTML-Datei>`: eine Abschnittsseite, die die Quelle nicht hat,
   etwa die Einstiegsseite eines Produkts; der Kurztitel ist ihre Adresse, die Datei (unterhalb des Wurzelverzeichnisses
   der Installation) ihr Text. Sie gibt auch einer Gruppenseite neue Werte.
 - `RetiredParent`: wohin `route --all` die verborgenen Reste früherer Läufe an der Spitze legt.
+- `RetiredRules[]=<Shell-Muster des Quellpfads>;<Containerpfad>[;<Namensmuster>[;<regulärer Ausdruck auf den
+  Namen>]]`: wohin `route --all` einen Rest an der Spitze legt, oder eine Fehlerseite, die ein früherer Lauf als Seite
+  importiert hat (eine Regel mit Namensprüfung: `/^Page Not Found\b/`), verborgen, mit einem dort eindeutigen Namen
+  nach dem Muster (`{title}: {file}`); die anderen kommen in `RetiredParent`.
 
 ## Was keine Seite ist
 
@@ -169,7 +184,7 @@ kommt in einen Status-Patch in `state-patches/` des Arbeitsordners, den dieser L
 
 | Befehl | Was er tut |
 |---|---|
-| `exp:static-import:route --type=<label> [--all]` | geroutete Seiten in ihre Container; mit `--all` jede Seite unter die Elternseite, die ihr die Regeln heute geben |
+| `exp:static-import:route --type=<label> [--all] [--batch=<n>] [--resume] [--limit=<n>]` | geroutete Seiten in ihre Container; mit `--all` jede Seite unter die Elternseite, die ihr die Regeln heute geben, benannt nach `NameRules[]`, Kopien und Reste abgelegt; Knoten-IDs bleiben, alte Adressen leiten weiter; alle n Seiten eine Fortschrittszeile und ein Cursor, `--resume` setzt fort |
 | `exp:static-import:relink --type=<label> [--comments]` | Seiten, deren statische Links sich jetzt auflösen lassen, oder jede Seite mit Kommentaren, erneut importiert |
 | `exp:static-import:hide-non-pages --type=<label>` | verbirgt importierte Seiten, die heute keine Seiten sind (Fehlerseiten, Binärdateien, Ansichten, Kopien, ausgeschlossene) |
 | `exp:static-import:bylines --type=<label> [--fill [--replace-roles]]` | die Prüfung der Autorenzeilen auf Datenverlust, und das Auffüllen |

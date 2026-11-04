@@ -85,8 +85,27 @@ class expStaticImportTypeDocHtml extends expStaticImportHtmlType
                     }
                 }
             }
+            // the containers ParentRules[] send the folder pages into ({folder}: a version page below the container
+            // of its version) are only known now, and so is the order of the pages below them
+            $count = count( $paths );
+            $paths = $this->addParentContainers( $paths );
+            if ( count( $paths ) !== $count )
+            {
+                $this->known = array_fill_keys( $paths, true );
+                $paths = $this->parentsFirst( $paths );
+            }
         }
         return $paths;
+    }
+
+    /**
+     * @param string $path
+     * @return string the folder a renamed folder page stands for (4.7 for Technical-manual/4.html), '' for other pages
+     */
+    protected function folderOf( $path )
+    {
+        $folder = array_search( $path, $this->folderPages, true );
+        return $folder === false ? '' : basename( (string)$folder );
     }
 
     protected function folderParent( $path )

@@ -68,6 +68,12 @@ abstract class expStaticImportHtmlType implements expStaticImportTypeInterface
     /** @var array group path => the values of its first page (RouteMeta[]), for its title and relation */
     protected $groupMeta = array();
 
+    /** @var array group path => its short title (its address), from RouteContainers[] or GroupShortTitles[] */
+    protected $groupShort = array();
+
+    /** @var array group path => array( meta key => value ), from the fourth part of RouteContainers[] */
+    protected $groupValues = array();
+
     /** @var array path => array( 'container' => ..., 'name' => ..., 'meta' => array, 'current' => page id ) */
     protected $routes = array();
 
@@ -208,7 +214,7 @@ abstract class expStaticImportHtmlType implements expStaticImportTypeInterface
      */
     protected function readStructure( $source, array $paths )
     {
-        $this->breadcrumbParents = $this->groups = array();
+        $this->breadcrumbParents = $this->groups = $this->groupShort = $this->groupValues = array();
         $this->sourceDir = rtrim( $source, '/' );
         $selector = trim( (string)$this->rules->get( 'BreadcrumbSelector', '' ) );
         $crumbPaths = $this->rules->getList( 'BreadcrumbPaths' );
@@ -267,11 +273,22 @@ abstract class expStaticImportHtmlType implements expStaticImportTypeInterface
                         continue 2;
                 $this->groups[$folder . '/'] = isset( $titles[$folder] ) && trim( (string)$titles[$folder] ) !== '' ? trim( (string)$titles[$folder] )
                     : ( isset( $folderTitles[$folder] ) ? $folderTitles[$folder] : ucfirst( str_replace( array( '-', '_', '+' ), ' ', basename( $folder ) ) ) );
+                // GroupShortTitles[<shell pattern of the folder>]=<pattern>: the group's short title (its address),
+                // e.g. display/*={file} for a Confluence space addressed by its key
+                foreach ( $this->rules->getHash( 'GroupShortTitles' ) as $pattern => $short )
+                    if ( self::matches( $folder, (string)$pattern ) )
+                    {
+                        $short = self::fillStrict( (string)$short, $this->pathValues( $folder . '/' ) );
+                        if ( $short !== null && trim( $short ) !== '' )
+                            $this->groupShort[$folder . '/'] = trim( $short );
+                        break;
+                    }
                 $paths[] = $folder . '/';
             }
         }
         $paths = $this->readRoutes( $source, $paths );
         $paths = $this->readVirtualPages( $paths );
+        $paths = $this->addParentContainers( $paths );
         // a breadcrumb that leads round in a circle (A below B below A) is not followed
         $this->known = array_fill_keys( $paths, true );
         foreach ( array_keys( $this->breadcrumbParents ) as $path )
@@ -352,7 +369,6 @@ abstract class expStaticImportHtmlType implements expStaticImportTypeInterface
         if ( !$rules )
             return $paths;
         $metaRules = $this->rules->getHash( 'RouteMeta' );
-        $containers = $this->rules->getHash( 'RouteContainers' );
         foreach ( $paths as $path )
         {
             $html = null;
@@ -381,26 +397,9 @@ abstract class expStaticImportHtmlType implements expStaticImportTypeInterface
                     continue;
                 $this->routes[$path] = array( 'container' => $container, 'name' => $name, 'meta' => $meta,
                                               'current' => $rule[4] !== '' ? trim( self::fill( $rule[4], $meta ) ) : '' );
-                // the container and the containers above it
-                for ( $dir = $container; $dir !== '/' && $dir !== './' && $dir !== ''; $dir = ( dirname( rtrim( $dir, '/' ) ) === '.' ? '' : dirname( rtrim( $dir, '/' ) ) . '/' ) )
-                {
-                    if ( isset( $this->groups[$dir] ) )
-                        continue;
-                    foreach ( $containers as $key => $value )
-                    {
-                        if ( !self::matches( rtrim( $dir, '/' ), rtrim( (string)$key, '/' ) ) )
-                            continue;
-                        list( $class, $title ) = array_pad( array_map( 'trim', explode( ';', (string)$value, 2 ) ), 2, '' );
-                        $title = trim( self::fill( $title, $meta ) );
-                        $this->groups[$dir] = $title !== '' ? $title : basename( rtrim( $dir, '/' ) );
-                        if ( $class !== '' )
-                            $this->groupClasses[$dir] = $class;
-                        // a container of one original page is a history of that page too
-                        $this->groupMeta[$dir] = $dir === $container ? $this->routes[$path]['current'] : '';
-                        $paths[] = $dir;
-                        break;
-                    }
-                }
+                // the container and the containers above it (a container of one original page is a history of that
+                // page too)
+                $paths = $this->addContainer( $container, $meta, $paths, $this->routes[$path]['current'] );
                 break;
             }
         }
@@ -420,6 +419,228 @@ abstract class expStaticImportHtmlType implements expStaticImportTypeInterface
                     return trim( (string)$values[$key] );
             return '';
         }, (string)$pattern );
+    }
+
+    /**
+     * Like fill(), but null when a placeholder has no value (a rule that cannot be applied to this page).
+     *
+     * @param string $pattern
+     * @param array $values
+     * @return string|null
+     */
+    public static function fillStrict( $pattern, array $values )
+    {
+        $missing = false;
+        $out = preg_replace_callback( '/\{([a-z0-9_|]+)\}/i', function ( $m ) use ( $values, &$missing ) {
+            foreach ( explode( '|', $m[1] ) as $key )
+                if ( isset( $values[$key] ) && trim( (string)$values[$key] ) !== '' )
+                    return trim( (string)$values[$key] );
+            $missing = true;
+            return '';
+        }, (string)$pattern );
+        return $missing ? null : $out;
+    }
+
+    /**
+     * The values a path offers to the patterns of ParentRules[], TopParentRules[], NameRules[], GroupShortTitles[]
+     * and RouteContainers[]: {path}; {file} (the last part without its page suffix); {dir} (the folder); {seg1},
+     * {seg2} ... (the parts of the path); {folder} (the folder a renamed folder page stands for, e.g. 4.7 for
+     * Technical-manual/4.html; empty for other pages).
+     *
+     * @param string $path
+     * @return array
+     */
+    public function pathValues( $path )
+    {
+        $trimmed = rtrim( (string)$path, '/' );
+        $dir = dirname( $trimmed );
+        $suffixes = $this->rules->getList( 'Suffixes' ) ?: array( 'html', 'htm' );
+        $file = basename( $trimmed );
+        foreach ( $suffixes as $suffix )
+            if ( substr( strtolower( $file ), -strlen( $suffix ) - 1 ) === '.' . strtolower( $suffix ) )
+            {
+                $file = substr( $file, 0, -strlen( $suffix ) - 1 );
+                break;
+            }
+        $values = array( 'path' => (string)$path, 'file' => $file, 'dir' => $dir === '.' ? '' : $dir, 'folder' => $this->folderOf( $path ) );
+        foreach ( explode( '/', $trimmed ) as $i => $segment )
+            $values['seg' . ( $i + 1 )] = $segment;
+        return $values;
+    }
+
+    /**
+     * @param string $path
+     * @return string the name of the folder the page stands for, '' when it is no folder page (see the doc-html type)
+     */
+    protected function folderOf( $path )
+    {
+        return '';
+    }
+
+    /**
+     * The spec of RouteContainers[] that matches a container path, first match wins:
+     *   RouteContainers[<container path, * for one folder>]=<class>;<title pattern>[;<short title pattern>[;<key>=<pattern>,...]]
+     * The short title is the container's address (the name pattern of the class decides what is its name); the
+     * key=pattern pairs are values of the container page (e.g. version={folder}, which AttributeMap[] can use).
+     *
+     * @param string $dir
+     * @return array|null array( class, title pattern, short title pattern, fields )
+     */
+    protected function containerSpec( $dir )
+    {
+        foreach ( $this->rules->getHash( 'RouteContainers' ) as $key => $value )
+            if ( self::matches( rtrim( (string)$dir, '/' ), rtrim( (string)$key, '/' ) ) )
+                return array_pad( array_map( 'trim', explode( ';', (string)$value, 4 ) ), 4, '' );
+        return null;
+    }
+
+    /**
+     * @param string $fields "<key>=<pattern>,<key>=<pattern>"
+     * @param array $values
+     * @return array key => value
+     */
+    protected static function containerValues( $fields, array $values )
+    {
+        $out = array();
+        foreach ( array_filter( array_map( 'trim', explode( ',', (string)$fields ) ) ) as $pair )
+        {
+            list( $key, $pattern ) = array_pad( array_map( 'trim', explode( '=', $pair, 2 ) ), 2, '' );
+            $value = $key !== '' ? trim( self::fill( $pattern, $values ) ) : '';
+            if ( $value !== '' )
+                $out[$key] = $value;
+        }
+        return $out;
+    }
+
+    /**
+     * Makes a container (a group page, a path ending in "/") and the containers above it, each by its spec in
+     * RouteContainers[]; a folder of the path that has no spec is left out (its parent comes from the other rules). A
+     * container that exists already (a virtual page) only takes the values of its spec it does not have.
+     *
+     * @param string $container
+     * @param array $values the values of the page that needs it, for the patterns
+     * @param array $paths
+     * @param string $current the page id of the page the container is a history of
+     * @return array the paths, with the new containers added
+     */
+    public function addContainer( $container, array $values, array $paths, $current = '' )
+    {
+        $container = rtrim( (string)$container, '/' ) . '/';
+        for ( $dir = $container; $dir !== '/' && $dir !== './' && $dir !== ''; $dir = ( dirname( rtrim( $dir, '/' ) ) === '.' ? '' : dirname( rtrim( $dir, '/' ) ) . '/' ) )
+        {
+            $spec = $this->containerSpec( $dir );
+            if ( isset( $this->groups[$dir] ) )
+            {
+                if ( $spec && empty( $this->groupValues[$dir] ) )
+                    $this->groupValues[$dir] = self::containerValues( $spec[3], $values );
+                continue;
+            }
+            if ( !$spec )
+                continue;
+            list( $class, $title, $short, $fields ) = $spec;
+            $title = trim( self::fill( $title, $values ) );
+            $this->groups[$dir] = $title !== '' ? $title : basename( rtrim( $dir, '/' ) );
+            if ( $class !== '' )
+                $this->groupClasses[$dir] = $class;
+            $short = trim( self::fill( $short, $values ) );
+            if ( $short !== '' )
+                $this->groupShort[$dir] = $short;
+            $this->groupValues[$dir] = self::containerValues( $fields, $values );
+            $this->groupMeta[$dir] = $dir === $container ? (string)$current : '';
+            $paths[] = $dir;
+        }
+        return $paths;
+    }
+
+    /**
+     * The containers ParentRules[] with placeholders send pages into (e.g. "Exponential/*\/[0-9]*.html;Exponential/{folder}/":
+     * every version page below a container of its version), made by RouteContainers[].
+     *
+     * @param array $paths
+     * @return array the paths, with the new containers added
+     */
+    protected function addParentContainers( array $paths )
+    {
+        $rules = $this->rules->getList( 'ParentRules' );
+        if ( !$rules || !$this->rules->getHash( 'RouteContainers' ) )
+            return $paths;
+        $known = array_fill_keys( $paths, true );
+        foreach ( $paths as $path )
+        {
+            foreach ( $rules as $rule )
+            {
+                list( $pattern, $parent ) = array_pad( array_map( 'trim', explode( ';', $rule, 2 ) ), 2, '' );
+                if ( $pattern === '' || $parent === '' || $parent[0] === '@' || !self::matches( $path, $pattern ) )
+                    continue;
+                $values = $this->pathValues( $path );
+                $filled = self::fillStrict( $parent, $values );
+                if ( $filled === null || $filled === $path )
+                    continue;
+                // a container that is not there yet, or a group page (a virtual page) that takes the values of its spec
+                if ( substr( $filled, -1 ) === '/' && ( !isset( $known[$filled] ) || isset( $this->groups[$filled] ) ) )
+                {
+                    $before = count( $paths );
+                    $paths = $this->addContainer( $filled, $values, $paths );
+                    foreach ( array_slice( $paths, $before ) as $added )
+                        $known[$added] = true;
+                }
+                break;
+            }
+        }
+        return $paths;
+    }
+
+    /**
+     * The parent a rule of ParentRules[] or TopParentRules[] names, for one page: its placeholders filled from the
+     * page's path (pathValues()); "@<remote id>" is a node outside the import (e.g. the media folder). '' when the
+     * rule cannot be used (a placeholder without a value, the page itself, a parent the import does not know).
+     *
+     * @param string $parent
+     * @param string $path
+     * @return string
+     */
+    protected function ruleParent( $parent, $path )
+    {
+        if ( strpos( $parent, '{' ) !== false )
+        {
+            $parent = self::fillStrict( $parent, $this->pathValues( $path ) );
+            if ( $parent === null )
+                return '';
+        }
+        if ( $parent === '' || $parent === $path )
+            return '';
+        if ( $parent[0] === '@' )
+            return $parent;
+        return isset( $this->known[$parent] ) || isset( $this->groups[$parent] ) ? $parent : '';
+    }
+
+    /**
+     * NameRules[]=<shell pattern>;<title pattern>[;<short title pattern>]: the title (and short title, the address)
+     * a page gets instead of its own, first match wins; the patterns take the values of pathValues(), {title} (the
+     * page's own title) and the page's meta values. A rule whose placeholders have no value is passed over.
+     *
+     * @param string $path
+     * @param array $values more values ({title}, meta)
+     * @return array|null array( title, short title ('' to keep the default) )
+     */
+    public function nameRule( $path, array $values = array() )
+    {
+        $rules = $this->rules->getList( 'NameRules' );
+        if ( !$rules )
+            return null;
+        $values = $this->pathValues( $path ) + $values;
+        foreach ( $rules as $rule )
+        {
+            list( $pattern, $title, $short ) = array_pad( array_map( 'trim', explode( ';', $rule, 3 ) ), 3, '' );
+            if ( $pattern === '' || $title === '' || !self::matches( $path, $pattern ) )
+                continue;
+            $title = self::fillStrict( $title, $values );
+            $short = $short === '' ? '' : self::fillStrict( $short, $values );
+            if ( $title === null || $short === null || trim( $title ) === '' )
+                continue;
+            return array( trim( $title ), trim( $short ) );
+        }
+        return null;
     }
 
     /**
@@ -549,6 +770,11 @@ abstract class expStaticImportHtmlType implements expStaticImportTypeInterface
                 $page['meta']['description'] = mb_substr( trim( preg_replace( '/\s+/u', ' ', strip_tags( preg_replace( '#<h[1-6][^>]*>.*?</h[1-6]>#s', '', $page['body_html'] ) ) ) ), 0, 300 );
             }
         }
+        // the short title (the address) and the values RouteContainers[] or GroupShortTitles[] give the group
+        if ( empty( $page['short_title'] ) && isset( $this->groupShort[$path] ) )
+            $page['short_title'] = $this->groupShort[$path];
+        if ( !empty( $this->groupValues[$path] ) )
+            $page['meta'] = array_merge( $this->groupValues[$path], $page['meta'] );
         $class = isset( $this->groupClasses[$path] ) ? $this->groupClasses[$path] : trim( (string)$this->rules->get( 'GroupClass', '' ) );
         if ( $class !== '' )
             $page['class_fixed'] = $class;
@@ -840,6 +1066,21 @@ abstract class expStaticImportHtmlType implements expStaticImportTypeInterface
             if ( $route['current'] !== '' )
                 $page['history_of'] = $route['current'];
         }
+        // NameRules[]: a title (and an address) of the rules instead of the page's own (a manual's version page below
+        // a version container: "Technical manual 4.7", addressed technical-manual)
+        if ( !array_key_exists( 'parent_fixed', $page ) && !isset( $this->groups[$page['path']] ) && !$this->route( $page['path'] ) )
+        {
+            $values = array( 'title' => $page['title'] );
+            foreach ( isset( $page['meta'] ) ? (array)$page['meta'] : array() as $key => $value )
+                if ( is_scalar( $value ) && !isset( $values[$key] ) )
+                    $values[$key] = (string)$value;
+            if ( $named = $this->nameRule( $page['path'], $values ) )
+            {
+                $page['title'] = $named[0];
+                if ( $named[1] !== '' )
+                    $page['short_title'] = $named[1];
+            }
+        }
 
         $fields = $this->fields( $page );
         $attributes = array();
@@ -940,14 +1181,19 @@ abstract class expStaticImportHtmlType implements expStaticImportTypeInterface
      */
     public function parentPath( $path )
     {
+        // a node outside the import ("@<remote id>") is a top of its own
+        if ( $path === '' || $path[0] === '@' )
+            return '';
         if ( isset( $this->routes[$path] ) )
             return $this->routes[$path]['container'];
-        // ParentRules[]=<shell pattern>;<parent path>: a fixed parent before any other rule (a space below its product)
+        // ParentRules[]=<shell pattern>;<parent path>: a fixed parent before any other rule (a space below its product).
+        // The parent may take placeholders ({folder}, {file}, {seg2} ...: pathValues()), a container of RouteContainers[]
+        // is made for it; "@<remote id>" is a node outside the import. A rule that cannot be used is passed over.
         foreach ( $this->rules->getList( 'ParentRules' ) as $rule )
         {
             list( $pattern, $parent ) = array_pad( array_map( 'trim', explode( ';', $rule, 2 ) ), 2, '' );
-            if ( $pattern !== '' && $parent !== '' && $parent !== $path && self::matches( $path, $pattern ) && isset( $this->known[$parent] ) )
-                return $parent;
+            if ( $pattern !== '' && $parent !== '' && self::matches( $path, $pattern ) && ( $target = $this->ruleParent( $parent, $path ) ) !== '' )
+                return $target;
         }
         $parent = isset( $this->breadcrumbParents[$path] ) ? $this->breadcrumbParents[$path] : $this->folderParent( $path );
         return $parent === '' ? $this->topParent( $path ) : $parent;
@@ -968,7 +1214,7 @@ abstract class expStaticImportHtmlType implements expStaticImportTypeInterface
             list( $pattern, $parent ) = array_pad( array_map( 'trim', explode( ';', $rule, 2 ) ), 2, '' );
             if ( $pattern === '' || !self::matches( $path, $pattern ) )
                 continue;
-            return $parent !== '' && $parent !== $path && isset( $this->known[$parent] ) ? $parent : '';
+            return $parent === '' ? '' : $this->ruleParent( $parent, $path );
         }
         return '';
     }

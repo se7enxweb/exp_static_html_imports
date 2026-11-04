@@ -386,17 +386,55 @@ class expStaticImportEngine
     }
 
     /**
-     * Puts the pages an earlier run imported where RouteRules[] send them today (exp:static-import:route): the
-     * containers of RouteContainers[] are made (with the remote ids a run gives them), each routed page moves into
-     * its container, takes its own name (unique below the container) and its relation to the current page
-     * (history_of), and is shown again if an earlier step hid it. The state file is never written: what the next run
-     * must know (the new written hash of a renamed page) goes to a state patch. Safe while a run is going on.
+     * The node of a parent path: '' is the import's top node; "@<remote id>" a node outside the import (ParentRules[]);
+     * else the page the state knows, or the object a console step made for it (a container) by its remote id.
+     *
+     * @param string $parentPath
+     * @param array $containerNodes group path => node id, made in this step
+     * @return int 0 when the parent is not there (yet)
+     */
+    protected function resolveParentNode( $parentPath, array $containerNodes = array() )
+    {
+        $parentPath = (string)$parentPath;
+        if ( $parentPath === '' )
+            return $this->parentNode();
+        if ( $parentPath[0] === '@' )
+        {
+            $object = eZContentObject::fetchByRemoteID( substr( $parentPath, 1 ) );
+            return $object instanceof eZContentObject ? (int)$object->attribute( 'main_node_id' ) : 0;
+        }
+        if ( isset( $containerNodes[$parentPath] ) )
+            return (int)$containerNodes[$parentPath];
+        if ( $node = $this->state->nodeOf( $parentPath ) )
+            return (int)$node;
+        $object = eZContentObject::fetchByRemoteID( self::remoteID( $this->label, $parentPath ) );
+        return $object instanceof eZContentObject ? (int)$object->attribute( 'main_node_id' ) : 0;
+    }
+
+    /**
+     * Puts the pages an earlier run imported where the rules send them today (exp:static-import:route), keeping every
+     * node id (the kernel's node move; the old addresses stay as history and redirect):
+     * - the containers (RouteContainers[], VirtualPages[], with $all every group page) are made with the remote ids a
+     *   run gives them, moved below the parent the rules give them and given the title and short title of the rules;
+     * - each routed page (RouteRules[]) moves into its container, takes its own name (unique below the container) and
+     *   its relation to the current page (history_of), and is shown again if an earlier step hid it;
+     * - with $all every other imported page moves below the parent its path, breadcrumb, ParentRules[] or
+     *   TopParentRules[] give it, with the title of NameRules[] and a name unique below that parent; a copy of another
+     *   page (CopyOfPatterns[]) is hidden and goes into RetiredParent; and the import's leftovers at the top (nodes of
+     *   earlier runs that are no pages of the state any more) go where RetiredRules[] send them, hidden.
+     * The pages go in batches ($options['batch'] pages each, with a progress event and a cursor file after each, so an
+     * interrupted step continues with $options['resume']); $options['limit'] stops after that many pages. The state
+     * file is never written: what the next run must know (the new written hash of a renamed page) goes to a state
+     * patch. Safe while a run is going on.
      *
      * @param bool $dryRun only count
+     * @param bool $all every page, not only the routed ones
+     * @param array $options batch, resume, limit
      * @return array the counts and the lists
      */
-    public function applyRoutes( $dryRun = false, $all = false )
+    public function applyRoutes( $dryRun = false, $all = false, array $options = array() )
     {
+        $options += array( 'batch' => 0, 'resume' => false, 'limit' => 0 );
         $this->options['pull'] = false;
         $this->options['dry_run'] = (bool)$dryRun;
         $this->report = array( 'counts' => array(), 'warnings' => array() );
@@ -408,51 +446,23 @@ class expStaticImportEngine
         $user = $this->actAs();
         $root = $this->parentNode();
         $countChildren = function ( $node ) { return (int)eZDB::instance()->arrayQuery( "SELECT COUNT(*) AS n FROM ezcontentobject_tree WHERE parent_node_id = " . (int)$node )[0]['n']; };
-        $out = array( 'root_children_before' => $countChildren( $root ), 'containers_created' => 0, 'containers' => 0, 'routed' => 0, 'moved' => 0,
-                      'renamed' => 0, 'shown' => 0, 'related' => 0, 'not_imported' => 0, 'families' => array(), 'patch' => '' );
+        $out = array( 'root_children_before' => $countChildren( $root ), 'containers_created' => 0, 'containers' => 0, 'containers_moved' => 0,
+                      'retitled' => 0, 'routed' => 0, 'moved' => 0, 'renamed' => 0, 'shown' => 0, 'related' => 0, 'not_imported' => 0,
+                      'retired' => 0, 'leftovers' => 0, 'pages' => 0, 'items' => 0, 'start' => 0, 'position' => 0, 'batches' => 0,
+                      'complete' => false, 'families' => array(), 'moved_by' => array(), 'renamed_by' => array(), 'unplaced_by' => array(), 'retired_by' => array(), 'patch' => '' );
         $routes = method_exists( $this->type, 'routes' ) ? $this->type->routes() : array();
-        // the containers, parents first
+        // the containers, parents first: without $all only the route containers (the other group pages are the next
+        // run's), with $all every group page
         $containerNodes = array();
-        // only the route containers (the other group pages are the next run's)
         $wanted = array();
         foreach ( $routes as $route )
             for ( $dir = $route['container']; $dir !== '' && $dir !== './'; $dir = dirname( rtrim( $dir, '/' ) ) === '.' ? '' : dirname( rtrim( $dir, '/' ) ) . '/' )
                 $wanted[$dir] = true;
-        // with $all every group page (GroupFolders[] too), and every imported page goes where the rules put it today
-        $groups = array_values( array_filter( $paths, function ( $p ) use ( $wanted, $all ) { return $all ? substr( $p, -1 ) === '/' : isset( $wanted[$p] ); } ) );
-        foreach ( $groups as $group )
-        {
-            $page = $this->type->map( $this->type->parse( $this->source, $group ) );
-            $parent = $page['parent_path'] !== '' ? ( isset( $containerNodes[$page['parent_path']] ) ? $containerNodes[$page['parent_path']] : $this->state->nodeOf( $page['parent_path'] ) ) : $root;
-            if ( !$parent )
-                continue;
-            $remoteID = self::remoteID( $this->label, $group );
-            $object = eZContentObject::fetchByRemoteID( $remoteID );
-            $out['containers']++;
-            if ( !$object && !$dryRun )
-            {
-                $attributes = array();
-                foreach ( $page['attributes'] as $identifier => $value )
-                    if ( $value === '{body}' )
-                        $attributes[$identifier] = (string)$this->toXml( $page['body_html'], $group );
-                    else if ( $value !== '{hash}' && strpos( (string)$value, '{' ) !== 0 )
-                        $attributes[$identifier] = $value;
-                $object = eZContentFunctions::createAndPublishObject( array( 'parent_node_id' => $parent, 'class_identifier' => $page['class'],
-                    'creator_id' => (int)$user->attribute( 'contentobject_id' ), 'remote_id' => $remoteID, 'attributes' => $attributes,
-                    'language' => $this->language(), 'section_id' => $this->sectionFor( $page ) ) );
-                if ( $object )
-                    $out['containers_created']++;
-            }
-            if ( $object instanceof eZContentObject )
-            {
-                $containerNodes[$group] = (int)$object->attribute( 'main_node_id' );
-                if ( !empty( $page['history_of'] ) && !$dryRun )
-                    $out['related'] += $this->setRelation( $object, 'history_of', $this->objectByPageId( $page['history_of'] ) );
-            }
-        }
-        // the routed pages (with $all: every imported page, routed or not)
-        $patch = array();
-        $n = 0;
+        foreach ( $paths as $group )
+            if ( $all ? substr( $group, -1 ) === '/' : isset( $wanted[$group] ) )
+                $this->ensureContainer( $group, $containerNodes, $user, $out );
+
+        // the pages: the routed ones (with $all every imported page)
         $items = $routes;
         if ( $all )
             foreach ( $this->state->data['pages'] as $path => $entry )
@@ -463,124 +473,56 @@ class expStaticImportEngine
                      && !$this->isRootPage( $path ) && ( !method_exists( $this->type, 'isKnown' ) || $this->type->isKnown( $path ) ) )
                     $items[$path] = null;
             }
-        foreach ( $items as $path => $route )
+        $retiredNode = $this->retiredNode( $containerNodes, $user, $out );
+        $keys = array_map( 'strval', array_keys( $items ) );
+        $out['items'] = count( $keys );
+        $cursorFile = $this->workDir . '/route-cursor.json';
+        $start = 0;
+        if ( $options['resume'] && is_file( $cursorFile ) )
         {
-            $path = (string)$path;
-            $entry = $this->state->page( $path );
-            if ( $route === null )
-            {
-                // a page that is not routed: below the parent its path, breadcrumb or TopParentRules[] give it today
-                $object = eZContentObject::fetchByRemoteID( self::remoteID( $this->label, $path ) );
-                $node = $object instanceof eZContentObject ? $object->attribute( 'main_node' ) : null;
-                if ( !$node instanceof eZContentObjectTreeNode )
-                    continue;
-                if ( ++$n % 50 === 0 )
-                    eZContentObject::clearCache();
-                $parentPath = $this->type->parentPath( $path );
-                $target = $parentPath === '' ? $root : ( isset( $containerNodes[$parentPath] ) ? $containerNodes[$parentPath] : $this->state->nodeOf( $parentPath ) );
-                if ( !$target && $parentPath !== '' && ( $parentObject = eZContentObject::fetchByRemoteID( self::remoteID( $this->label, $parentPath ) ) ) )
-                    $target = (int)$parentObject->attribute( 'main_node_id' );
-                if ( !$target || (int)$target === (int)$node->attribute( 'node_id' ) )
-                    continue;
-                $out['pages'] = ( isset( $out['pages'] ) ? $out['pages'] : 0 ) + 1;
-                if ( (int)$node->attribute( 'parent_node_id' ) !== (int)$target )
-                {
-                    $out['moved']++;
-                    if ( !$dryRun && !eZContentObjectTreeNodeOperations::move( (int)$node->attribute( 'node_id' ), (int)$target ) )
-                        $out['warnings_move'][] = "$path could not be moved below node $target";
-                }
-                $name = $this->uniqueSiblingName( (int)$target, (string)$object->attribute( 'name' ), (int)$object->attribute( 'id' ), array( 'path' => $path, 'meta' => array() ) );
-                if ( $name !== null && $name !== (string)$object->attribute( 'name' ) )
-                {
-                    $out['renamed']++;
-                    if ( !$dryRun )
-                        $this->renameObject( $object, $name );
-                }
-                if ( !$dryRun && $entry && !empty( $entry['written_fields'] ) && $name !== (string)$object->attribute( 'name' ) )
-                {
-                    eZContentObject::clearCache( array( (int)$object->attribute( 'id' ) ) );
-                    $patch[$path] = array( 'written_hash' => $this->contentHash( eZContentObject::fetch( (int)$object->attribute( 'id' ) ), (array)$entry['written_fields'] ) );
-                }
-                continue;
-            }
-            $family = preg_replace( '/[0-9a-f]{4}(-)?\.html$|\.html$/', '', basename( $path ) );
-            $out['families'][$family] = ( isset( $out['families'][$family] ) ? $out['families'][$family] : 0 ) + 1;
-            $object = eZContentObject::fetchByRemoteID( self::remoteID( $this->label, $path ) );
-            if ( !$object instanceof eZContentObject )
-            {
-                $out['not_imported']++;
-                continue;
-            }
-            if ( ++$n % 50 === 0 )
+            $cursor = json_decode( (string)file_get_contents( $cursorFile ), true );
+            if ( is_array( $cursor ) && empty( $cursor['complete'] ) && isset( $cursor['position'], $cursor['items'] ) && (int)$cursor['items'] === count( $keys ) && (bool)$cursor['all'] === (bool)$all )
+                $start = (int)$cursor['position'];
+            else
+                $this->report['warnings'][] = 'the cursor does not fit this step (another list of pages or a finished step): started from the first page';
+        }
+        $out['start'] = $start;
+        $batch = max( 0, (int)$options['batch'] );
+        $limit = max( 0, (int)$options['limit'] );
+        $patch = array();
+        $i = $start;
+        for ( $n = count( $keys ); $i < $n; $i++ )
+        {
+            if ( $limit && $i - $start >= $limit )
+                break;
+            $path = $keys[$i];
+            $route = $items[$path];
+            if ( ( $i - $start + 1 ) % 50 === 0 )
                 eZContentObject::clearCache();
-            $out['routed']++;
-            $container = isset( $containerNodes[$route['container']] ) ? $containerNodes[$route['container']] : 0;
-            $node = $object->attribute( 'main_node' );
-            if ( !$container || !$node instanceof eZContentObjectTreeNode )
-                continue;
-            if ( (int)$node->attribute( 'parent_node_id' ) !== $container )
+            if ( $route === null )
+                $this->placePage( $path, $root, $retiredNode, $containerNodes, $user, $patch, $out );
+            else
+                $this->placeRoutedPage( $path, $route, $containerNodes, $patch, $out );
+            if ( $batch && ( $i - $start + 1 ) % $batch === 0 )
             {
-                $out['moved']++;
+                $out['batches']++;
                 if ( !$dryRun )
-                    eZContentObjectTreeNodeOperations::move( (int)$node->attribute( 'node_id' ), $container );
-            }
-            if ( (int)$node->attribute( 'is_hidden' ) && !expStaticImportHtmlType::matchesAny( $path, $this->rules->getList( 'HiddenPaths' ) ) )
-            {
-                $out['shown']++;
-                if ( !$dryRun )
-                    eZContentObjectTreeNode::unhideSubTree( $node );
-            }
-            $name = $this->uniqueSiblingName( $container, $route['name'], (int)$object->attribute( 'id' ), array( 'path' => $path, 'route_meta' => $route['meta'], 'meta' => array( 'page_id' => isset( $route['meta']['page_id'] ) ? $route['meta']['page_id'] : '' ) ) );
-            if ( $name !== null && $name !== (string)$object->attribute( 'name' ) )
-            {
-                $out['renamed']++;
-                if ( !$dryRun )
-                {
-                    $titles = array();
-                    foreach ( $this->rules->getHash( 'AttributeMap' ) as $key => $field )
-                    {
-                        list( $mapClass, $identifier ) = array_pad( explode( '/', (string)$key, 2 ), 2, '' );
-                        if ( $field === 'title' && ( $mapClass === '*' || $mapClass === (string)$object->attribute( 'class_identifier' ) ) && isset( $object->dataMap()[$identifier] ) )
-                            $titles[$identifier] = $name;
-                    }
-                    if ( $titles )
-                        eZContentFunctions::updateAndPublishObject( $object, array( 'attributes' => $titles, 'language' => $this->language() ) );
-                }
-            }
-            if ( !$dryRun && $route['current'] !== '' )
-                $out['related'] += $this->setRelation( eZContentObject::fetch( (int)$object->attribute( 'id' ) ), 'history_of', $this->objectByPageId( $route['current'] ) );
-            if ( !$dryRun && $entry && !empty( $entry['written_fields'] ) )
-            {
-                eZContentObject::clearCache( array( (int)$object->attribute( 'id' ) ) );
-                $patch[$path] = array( 'written_hash' => $this->contentHash( eZContentObject::fetch( (int)$object->attribute( 'id' ) ), (array)$entry['written_fields'] ) );
+                    file_put_contents( $cursorFile, json_encode( array( 'position' => $i + 1, 'items' => count( $keys ), 'all' => (bool)$all, 'time' => time() ) ) );
+                $this->emit( 'route', array( 'done' => $i + 1, 'of' => count( $keys ), 'moved' => $out['moved'], 'renamed' => $out['renamed'],
+                                             'retired' => $out['retired'], 'root_children' => $countChildren( $root ) ) );
             }
         }
-        // with $all: the hidden leftovers of earlier runs at the top (pages that became redirects, copies or no pages,
-        // kept hidden and no longer in the state as pages) go into RetiredParent (a page or container path)
-        $retired = (string)$this->rules->get( 'RetiredParent', '' );
-        if ( $all && $retired !== '' )
-        {
-            $retiredNode = isset( $containerNodes[$retired] ) ? $containerNodes[$retired] : $this->state->nodeOf( $retired );
-            if ( !$retiredNode && ( $retiredObject = eZContentObject::fetchByRemoteID( self::remoteID( $this->label, $retired ) ) ) )
-                $retiredNode = (int)$retiredObject->attribute( 'main_node_id' );
-            $managed = array();
-            foreach ( $this->state->data['pages'] as $path => $entry )
-                if ( !empty( $entry['node_id'] ) && ( !isset( $entry['status'] ) || !in_array( $entry['status'], array( 'removed', 'duplicate' ), true ) ) )
-                    $managed[(int)$entry['node_id']] = true;
-            $db = eZDB::instance();
-            $like = $db->escapeString( 'staticimport-' . $this->label . '-' );
-            foreach ( $retiredNode ? (array)$db->arrayQuery( "SELECT t.node_id FROM ezcontentobject_tree t JOIN ezcontentobject o ON o.id = t.contentobject_id
-                                                               WHERE t.parent_node_id = " . (int)$root . " AND t.is_hidden = 1 AND o.remote_id LIKE '$like%'" ) : array() as $row )
-            {
-                if ( isset( $managed[(int)$row['node_id']] ) || (int)$row['node_id'] === (int)$retiredNode )
-                    continue;
-                $out['retired_moved'] = ( isset( $out['retired_moved'] ) ? $out['retired_moved'] : 0 ) + 1;
-                if ( !$dryRun )
-                    eZContentObjectTreeNodeOperations::move( (int)$row['node_id'], (int)$retiredNode );
-            }
-        }
+        $out['position'] = $i;
+        $out['complete'] = $i >= count( $keys );
+
+        // with $all: the import's leftovers at the top (nodes of earlier runs that are no pages of the state: pages
+        // that became redirects, copies or no pages) go where RetiredRules[] send them, else into RetiredParent
+        if ( $all && $out['complete'] )
+            $this->placeLeftovers( $root, $retiredNode, $containerNodes, $user, $out );
+
         if ( !$dryRun )
         {
+            file_put_contents( $cursorFile, json_encode( array( 'position' => $i, 'items' => count( $keys ), 'all' => (bool)$all, 'time' => time(), 'complete' => $out['complete'] ) ) );
             $out['patch'] = $this->writeStatePatch( $patch, 'route' );
             eZContentCacheManager::clearAllContentCache( true );
         }
@@ -590,19 +532,399 @@ class expStaticImportEngine
     }
 
     /**
-     * Publishes a new name of an object into the attributes AttributeMap[] gives the field title.
+     * Makes a container (a group page) when it is missing, else moves it below the parent the rules give it and gives
+     * it the title, short title and string values of the rules (a renamed product, a version's number).
+     *
+     * @param string $group
+     * @param array $containerNodes group path => node id (-1 for one a dry run would make)
+     * @param eZUser $user
+     * @param array $out
+     * @return int the node, 0 when its parent is not there
+     */
+    protected function ensureContainer( $group, array &$containerNodes, eZUser $user, array &$out )
+    {
+        if ( isset( $containerNodes[$group] ) )
+            return $containerNodes[$group];
+        $dryRun = (bool)$this->options['dry_run'];
+        $page = $this->type->map( $this->type->parse( $this->source, $group ) );
+        $parent = $this->resolveParentNode( $page['parent_path'], $containerNodes );
+        if ( !$parent )
+        {
+            $this->report['warnings'][] = "$group: its parent {$page['parent_path']} is not there, the container is left out";
+            return 0;
+        }
+        $remoteID = self::remoteID( $this->label, $group );
+        $object = eZContentObject::fetchByRemoteID( $remoteID );
+        $out['containers']++;
+        if ( !$object )
+        {
+            $out['containers_created']++;
+            if ( $dryRun || $parent < 0 )
+                return $containerNodes[$group] = -1;
+            $attributes = array();
+            foreach ( $page['attributes'] as $identifier => $value )
+                if ( $value === '{body}' )
+                    $attributes[$identifier] = (string)$this->toXml( $page['body_html'], $group );
+                else if ( $value !== '{hash}' && strpos( (string)$value, '{' ) !== 0 )
+                    $attributes[$identifier] = $value;
+            // no two containers of one name below one parent
+            $name = $this->uniqueSiblingName( $parent, $page['title'], 0, $page );
+            if ( $name !== null && $name !== $page['title'] && isset( $attributes['title'] ) )
+                $attributes['title'] = $name;
+            $object = eZContentFunctions::createAndPublishObject( array( 'parent_node_id' => $parent, 'class_identifier' => $page['class'],
+                'creator_id' => (int)$user->attribute( 'contentobject_id' ), 'remote_id' => $remoteID, 'attributes' => $attributes,
+                'language' => $this->language(), 'section_id' => $this->sectionFor( $page ) ) );
+            if ( !$object instanceof eZContentObject )
+            {
+                $this->report['warnings'][] = "$group: the container could not be made";
+                return 0;
+            }
+        }
+        else
+        {
+            $node = $object->attribute( 'main_node' );
+            if ( $node instanceof eZContentObjectTreeNode && $parent > 0 && (int)$node->attribute( 'parent_node_id' ) !== (int)$parent && (int)$node->attribute( 'node_id' ) !== (int)$parent )
+            {
+                $out['containers_moved']++;
+                if ( !$dryRun )
+                    eZContentObjectTreeNodeOperations::move( (int)$node->attribute( 'node_id' ), (int)$parent );
+            }
+            // the string values of the rules (title, short title, version ...) where they differ
+            $dataMap = $object->dataMap();
+            $changes = array();
+            foreach ( $page['attributes'] as $identifier => $value )
+            {
+                if ( !isset( $dataMap[$identifier] ) || !is_string( $value ) || ( $value !== '' && $value[0] === '{' ) || $identifier === 'source_path' )
+                    continue;
+                if ( $dataMap[$identifier]->attribute( 'data_type_string' ) !== 'ezstring' )
+                    continue;
+                if ( trim( (string)$dataMap[$identifier]->toString() ) !== trim( $value ) )
+                    $changes[$identifier] = $value;
+            }
+            if ( isset( $changes['title'] ) && $parent > 0 )
+            {
+                $name = $this->uniqueSiblingName( $parent, $changes['title'], (int)$object->attribute( 'id' ), $page );
+                if ( $name !== null )
+                    $changes['title'] = $name;
+            }
+            if ( $changes )
+            {
+                $out['retitled']++;
+                if ( !$dryRun )
+                {
+                    eZContentFunctions::updateAndPublishObject( $object, array( 'attributes' => $changes, 'language' => $this->language() ) );
+                    eZContentObject::clearCache( array( (int)$object->attribute( 'id' ) ) );
+                    $object = eZContentObject::fetch( (int)$object->attribute( 'id' ) );
+                }
+            }
+        }
+        $containerNodes[$group] = (int)$object->attribute( 'main_node_id' );
+        if ( !empty( $page['history_of'] ) && !$dryRun )
+            $out['related'] += $this->setRelation( $object, 'history_of', $this->objectByPageId( $page['history_of'] ) );
+        return $containerNodes[$group];
+    }
+
+    /**
+     * The node RetiredParent names (a container or page path), made when it is a container the rules know.
+     *
+     * @return int 0 when there is none
+     */
+    protected function retiredNode( array &$containerNodes, eZUser $user, array &$out )
+    {
+        $retired = (string)$this->rules->get( 'RetiredParent', '' );
+        if ( $retired === '' )
+            return 0;
+        if ( substr( $retired, -1 ) === '/' && method_exists( $this->type, 'isGroup' ) && $this->type->isGroup( $retired ) )
+            return (int)$this->ensureContainer( $retired, $containerNodes, $user, $out );
+        return $this->resolveParentNode( $retired, $containerNodes );
+    }
+
+    /**
+     * A page that is not routed: below the parent its path, breadcrumb, ParentRules[] or TopParentRules[] give it today,
+     * with the title of NameRules[] and a name unique below that parent; a copy of another page is retired.
+     */
+    protected function placePage( $path, $root, $retiredNode, array &$containerNodes, eZUser $user, array &$patch, array &$out )
+    {
+        $dryRun = (bool)$this->options['dry_run'];
+        $object = eZContentObject::fetchByRemoteID( self::remoteID( $this->label, $path ) );
+        $node = $object instanceof eZContentObject ? $object->attribute( 'main_node' ) : null;
+        if ( !$node instanceof eZContentObjectTreeNode )
+            return;
+        // a copy of another page (CopyOfPatterns[]: Exponential/index.html of Exponential.html) is no page of its own
+        if ( method_exists( $this->type, 'copyOf' ) && $this->type->copyOf( $path ) !== '' )
+        {
+            if ( $retiredNode )
+                $this->retireNode( $node, $retiredNode, $out );
+            return;
+        }
+        // an error page an earlier run imported as a page (a rule of RetiredRules[] with a name check: "Page Not
+        // Found") goes where that rule says, hidden, named by its file
+        if ( $retired = $this->retiredRule( $path, (string)$object->attribute( 'name' ), $containerNodes, $user, $out, true ) )
+        {
+            $this->retireInto( $object, $node, $retired[0], $retired[1], $path, $out );
+            return;
+        }
+        $parentPath = $this->type->parentPath( $path );
+        $target = $this->resolveParentNode( $parentPath, $containerNodes );
+        if ( !$target || (int)$target === (int)$node->attribute( 'node_id' ) )
+        {
+            if ( !$target && $parentPath !== '' )
+            {
+                $this->tally( $out, 'unplaced_by', $path, "its parent $parentPath is not imported yet" );
+                $this->report['warnings'][] = "$path: its parent $parentPath is not imported yet";
+            }
+            return;
+        }
+        $out['pages']++;
+        if ( (int)$node->attribute( 'parent_node_id' ) !== (int)$target )
+        {
+            $out['moved']++;
+            $this->tally( $out, 'moved_by', $path, (int)$node->attribute( 'parent_node_id' ) . ' -> ' . $target );
+            if ( !$dryRun && $target > 0 && !eZContentObjectTreeNodeOperations::move( (int)$node->attribute( 'node_id' ), (int)$target ) )
+                $this->report['warnings'][] = "$path could not be moved below node $target";
+        }
+        // the title NameRules[] give it (the version page of a manual below its version: "Technical manual 4.7")
+        $current = (string)$object->attribute( 'name' );
+        $want = $current;
+        $short = '';
+        $dataMap = $object->dataMap();
+        $nameValues = array( 'title' => isset( $dataMap['title'] ) ? trim( (string)$dataMap['title']->toString() ) : $current,
+                             'page_id' => isset( $dataMap['source_page_id'] ) ? trim( (string)$dataMap['source_page_id']->toString() ) : '' );
+        // a rule that takes the page's own title reads it from the source (the stored one may carry a rule's name
+        // already), so the step names the page as a run would, and a second step changes nothing
+        foreach ( $this->rules->getList( 'NameRules' ) as $rule )
+        {
+            list( $pattern, $titlePattern ) = array_pad( array_map( 'trim', explode( ';', $rule, 3 ) ), 2, '' );
+            if ( $pattern === '' || !expStaticImportHtmlType::matches( $path, $pattern ) )
+                continue;
+            if ( strpos( $titlePattern, '{title' ) !== false )
+            {
+                try
+                {
+                    $parsed = $this->type->parse( $this->source, $path );
+                    if ( is_array( $parsed ) && isset( $parsed['title'] ) && trim( (string)$parsed['title'] ) !== '' )
+                        $nameValues['title'] = trim( (string)$parsed['title'] );
+                }
+                catch ( expStaticImportPageException $e )
+                {
+                }
+            }
+            break;
+        }
+        if ( method_exists( $this->type, 'nameRule' ) && ( $named = $this->type->nameRule( $path, $nameValues ) ) )
+            list( $want, $short ) = $named;
+        $name = $target > 0 ? $this->uniqueSiblingName( (int)$target, $want, (int)$object->attribute( 'id' ), array( 'path' => $path, 'meta' => array( 'page_id' => $nameValues['page_id'] ) ) ) : $want;
+        $shortNow = isset( $dataMap['short_title'] ) ? trim( (string)$dataMap['short_title']->toString() ) : '';
+        if ( $name !== null && ( $name !== $current || ( $short !== '' && $short !== $shortNow ) ) )
+        {
+            $out['renamed']++;
+            $this->tally( $out, 'renamed_by', $path, "'$current' -> '$name'" . ( $short !== '' ? " ($short)" : '' ) );
+            if ( !$dryRun )
+                $this->renameObject( $object, $name, $short );
+            if ( !$dryRun && ( $entry = $this->state->page( $path ) ) && !empty( $entry['written_fields'] ) )
+            {
+                eZContentObject::clearCache( array( (int)$object->attribute( 'id' ) ) );
+                $patch[$path] = array( 'written_hash' => $this->contentHash( eZContentObject::fetch( (int)$object->attribute( 'id' ) ), (array)$entry['written_fields'] ) );
+            }
+        }
+    }
+
+    /**
+     * A routed page (RouteRules[]): into its container, with its own name and its relation to the current page.
+     */
+    protected function placeRoutedPage( $path, array $route, array $containerNodes, array &$patch, array &$out )
+    {
+        $dryRun = (bool)$this->options['dry_run'];
+        $family = preg_replace( '/[0-9a-f]{4}(-)?\.html$|\.html$/', '', basename( $path ) );
+        $out['families'][$family] = ( isset( $out['families'][$family] ) ? $out['families'][$family] : 0 ) + 1;
+        $object = eZContentObject::fetchByRemoteID( self::remoteID( $this->label, $path ) );
+        if ( !$object instanceof eZContentObject )
+        {
+            $out['not_imported']++;
+            return;
+        }
+        $out['routed']++;
+        $container = isset( $containerNodes[$route['container']] ) ? (int)$containerNodes[$route['container']] : 0;
+        $node = $object->attribute( 'main_node' );
+        if ( !$container || !$node instanceof eZContentObjectTreeNode )
+            return;
+        if ( (int)$node->attribute( 'parent_node_id' ) !== $container )
+        {
+            $out['moved']++;
+            if ( !$dryRun && $container > 0 )
+                eZContentObjectTreeNodeOperations::move( (int)$node->attribute( 'node_id' ), $container );
+        }
+        if ( (int)$node->attribute( 'is_hidden' ) && !expStaticImportHtmlType::matchesAny( $path, $this->rules->getList( 'HiddenPaths' ) ) )
+        {
+            $out['shown']++;
+            if ( !$dryRun )
+                eZContentObjectTreeNode::unhideSubTree( $node );
+        }
+        $name = $container > 0 ? $this->uniqueSiblingName( $container, $route['name'], (int)$object->attribute( 'id' ), array( 'path' => $path, 'route_meta' => $route['meta'], 'meta' => array( 'page_id' => isset( $route['meta']['page_id'] ) ? $route['meta']['page_id'] : '' ) ) ) : $route['name'];
+        if ( $name !== null && $name !== (string)$object->attribute( 'name' ) )
+        {
+            $out['renamed']++;
+            if ( !$dryRun )
+                $this->renameObject( $object, $name );
+        }
+        if ( !$dryRun && $route['current'] !== '' )
+            $out['related'] += $this->setRelation( eZContentObject::fetch( (int)$object->attribute( 'id' ) ), 'history_of', $this->objectByPageId( $route['current'] ) );
+        if ( !$dryRun && ( $entry = $this->state->page( $path ) ) && !empty( $entry['written_fields'] ) )
+        {
+            eZContentObject::clearCache( array( (int)$object->attribute( 'id' ) ) );
+            $patch[$path] = array( 'written_hash' => $this->contentHash( eZContentObject::fetch( (int)$object->attribute( 'id' ) ), (array)$entry['written_fields'] ) );
+        }
+    }
+
+    /**
+     * Counts a change by the family of its path (the first two folders) and keeps the first examples of each, for the
+     * report of a step.
+     */
+    protected function tally( array &$out, $key, $path, $what )
+    {
+        $parts = explode( '/', (string)$path );
+        $family = implode( '/', array_slice( $parts, 0, min( 2, max( 1, count( $parts ) - 1 ) ) ) );
+        if ( !isset( $out[$key][$family] ) )
+            $out[$key][$family] = array( 'count' => 0, 'examples' => array() );
+        $out[$key][$family]['count']++;
+        if ( count( $out[$key][$family]['examples'] ) < 3 )
+            $out[$key][$family]['examples'][] = $path . ': ' . $what;
+    }
+
+    /**
+     * Hides a node and moves it into the retired container.
+     */
+    protected function retireNode( eZContentObjectTreeNode $node, $retiredNode, array &$out )
+    {
+        if ( (int)$node->attribute( 'parent_node_id' ) === (int)$retiredNode && (int)$node->attribute( 'is_hidden' ) )
+            return;
+        $out['retired']++;
+        if ( $this->options['dry_run'] || $retiredNode <= 0 )
+            return;
+        if ( !(int)$node->attribute( 'is_hidden' ) )
+            eZContentObjectTreeNode::hideSubTree( $node );
+        if ( (int)$node->attribute( 'parent_node_id' ) !== (int)$retiredNode )
+            eZContentObjectTreeNodeOperations::move( (int)$node->attribute( 'node_id' ), (int)$retiredNode );
+    }
+
+    /**
+     * The first rule of RetiredRules[] for a node of the import, by its source path and its name:
+     *   RetiredRules[]=<shell pattern of its source path>;<container path>[;<name pattern>[;<regular expression on its name>]]
+     * The container path and the name pattern take the values of the source path ({file}, {seg2} ...: pathValues())
+     * and {title}, the node's name; a container of RouteContainers[] is made when it is missing. With $checkedOnly only
+     * the rules with a name check count (an error page an earlier run imported as a page: "Page Not Found").
+     *
+     * @return array|null array( node id of the container (-1 in a dry run), the name )
+     */
+    protected function retiredRule( $source, $name, array &$containerNodes, eZUser $user, array &$out, $checkedOnly = false )
+    {
+        foreach ( $this->rules->getList( 'RetiredRules' ) as $line )
+        {
+            $rule = array_pad( array_map( 'trim', explode( ';', $line, 4 ) ), 4, '' );
+            if ( $rule[0] === '' || $rule[1] === '' || ( $checkedOnly && $rule[3] === '' ) || !expStaticImportHtmlType::matches( $source, $rule[0] )
+                 || ( $rule[3] !== '' && !@preg_match( $rule[3], $name ) ) )
+                continue;
+            $values = ( method_exists( $this->type, 'pathValues' ) ? $this->type->pathValues( $source ) : array() ) + array( 'title' => $name );
+            $container = expStaticImportHtmlType::fill( $rule[1], $values );
+            $target = 0;
+            if ( substr( $container, -1 ) === '/' && method_exists( $this->type, 'addContainer' ) )
+            {
+                if ( !$this->type->isGroup( $container ) )
+                    $this->type->addContainer( $container, $values, array() );
+                if ( $this->type->isGroup( $container ) )
+                    $target = (int)$this->ensureContainer( $container, $containerNodes, $user, $out );
+            }
+            if ( !$target )
+                $target = $this->resolveParentNode( $container, $containerNodes );
+            if ( !$target )
+                return null;
+            $filled = $rule[2] !== '' ? expStaticImportHtmlType::fillStrict( $rule[2], $values ) : null;
+            return array( $target, $filled !== null && trim( $filled ) !== '' ? trim( $filled ) : $name );
+        }
+        return null;
+    }
+
+    /**
+     * Moves a node that is no page into its container, hidden, with a name unique there.
+     */
+    protected function retireInto( eZContentObject $object, eZContentObjectTreeNode $node, $target, $name, $source, array &$out )
+    {
+        $dryRun = (bool)$this->options['dry_run'];
+        $current = (string)$object->attribute( 'name' );
+        if ( (int)$node->attribute( 'parent_node_id' ) === (int)$target && (int)$node->attribute( 'is_hidden' ) && $current === $name )
+            return;
+        $out['retired']++;
+        $this->tally( $out, 'retired_by', $source, "'$current' -> '$name' below node $target" );
+        if ( $target > 0 )
+        {
+            $unique = $this->uniqueSiblingName( (int)$target, $name, (int)$object->attribute( 'id' ), array( 'path' => $source, 'meta' => array() ) );
+            if ( $unique !== null && $unique !== $current )
+            {
+                $out['renamed']++;
+                if ( !$dryRun )
+                    $this->renameObject( $object, $unique );
+            }
+        }
+        if ( $dryRun || $target <= 0 )
+            return;
+        if ( !(int)$node->attribute( 'is_hidden' ) )
+            eZContentObjectTreeNode::hideSubTree( $node );
+        if ( (int)$node->attribute( 'parent_node_id' ) !== (int)$target )
+            eZContentObjectTreeNodeOperations::move( (int)$node->attribute( 'node_id' ), (int)$target );
+    }
+
+    /**
+     * The import's nodes at the top that are no pages of the state (left by earlier runs: redirects, copies, error
+     * pages): each goes where the first rule of RetiredRules[] that matches sends it, else into RetiredParent, hidden.
+     */
+    protected function placeLeftovers( $root, $retiredNode, array &$containerNodes, eZUser $user, array &$out )
+    {
+        $managed = array();
+        foreach ( $this->state->data['pages'] as $path => $entry )
+            if ( !empty( $entry['node_id'] ) && ( !isset( $entry['status'] ) || !in_array( $entry['status'], array( 'removed', 'duplicate', 'failed' ), true ) ) && strpos( (string)$path, '#' ) === false )
+                $managed[(int)$entry['node_id']] = true;
+        foreach ( $containerNodes as $nodeID )
+            $managed[(int)$nodeID] = true;
+        $db = eZDB::instance();
+        $like = $db->escapeString( 'staticimport-' . $this->label . '-' );
+        foreach ( (array)$db->arrayQuery( "SELECT t.node_id, o.id FROM ezcontentobject_tree t JOIN ezcontentobject o ON o.id = t.contentobject_id
+                                           WHERE t.parent_node_id = " . (int)$root . " AND o.remote_id LIKE '$like%'" ) as $row )
+        {
+            if ( isset( $managed[(int)$row['node_id']] ) || (int)$row['node_id'] === (int)$retiredNode )
+                continue;
+            $object = eZContentObject::fetch( (int)$row['id'] );
+            $node = $object instanceof eZContentObject ? $object->attribute( 'main_node' ) : null;
+            if ( !$node instanceof eZContentObjectTreeNode )
+                continue;
+            $dataMap = $object->dataMap();
+            $source = isset( $dataMap['source_path'] ) ? trim( (string)$dataMap['source_path']->toString() ) : '';
+            $current = (string)$object->attribute( 'name' );
+            $retired = $this->retiredRule( $source, $current, $containerNodes, $user, $out );
+            $target = $retired ? $retired[0] : $retiredNode;
+            if ( !$target )
+                continue;
+            $out['leftovers']++;
+            $this->retireInto( $object, $node, $target, $retired ? $retired[1] : $current, $source, $out );
+        }
+    }
+
+    /**
+     * Publishes a new name of an object into the attributes AttributeMap[] gives the fields title and short_title (the
+     * short title is the name too, unless one is given: the name patterns of the classes read either).
      *
      * @param eZContentObject $object
      * @param string $name
+     * @param string $short the short title ('' for the name)
      */
-    protected function renameObject( eZContentObject $object, $name )
+    protected function renameObject( eZContentObject $object, $name, $short = '' )
     {
         $titles = array();
+        $dataMap = $object->dataMap();
         foreach ( $this->rules->getHash( 'AttributeMap' ) as $key => $field )
         {
             list( $mapClass, $identifier ) = array_pad( explode( '/', (string)$key, 2 ), 2, '' );
-            if ( $field === 'title' && ( $mapClass === '*' || $mapClass === (string)$object->attribute( 'class_identifier' ) ) && isset( $object->dataMap()[$identifier] ) )
-                $titles[$identifier] = $name;
+            if ( ( $field === 'title' || $field === 'short_title' ) && ( $mapClass === '*' || $mapClass === (string)$object->attribute( 'class_identifier' ) ) && isset( $dataMap[$identifier] ) )
+                $titles[$identifier] = $field === 'title' ? $name : ( $short !== '' ? $short : $name );
         }
         if ( $titles )
             eZContentFunctions::updateAndPublishObject( $object, array( 'attributes' => $titles, 'language' => $this->language() ) );
@@ -1004,14 +1326,21 @@ class expStaticImportEngine
             // (an INI value loses its leading space: the suffix always starts with one)
             $suffix = ' ' . ltrim( (string)$this->rules->get( 'SiblingNameSuffix', '({n})' ) );
             $values = ( isset( $page['route_meta'] ) ? (array)$page['route_meta'] : array() ) + array( 'page_id' => isset( $page['meta']['page_id'] ) ? $page['meta']['page_id'] : '' );
+            $previous = null;
             for ( $n = 2; $n < 10000; $n++ )
             {
                 $candidate = $name . expStaticImportHtmlType::fill( $suffix, $values + array( 'n' => (string)$n ) );
                 if ( !$taken( $candidate ) )
                     break;
-                // a suffix without {n} that is taken already gets the counter too
-                if ( strpos( $suffix, '{n}' ) === false )
+                // a suffix that does not count (it named the space or the page id, and that is taken too) gets the
+                // counter after it, once: "Comments (2)", "Page (EZP) (2)", never "Comments (3) (3)"
+                if ( $candidate === $previous || ( $previous === null && !preg_match( '/\{[^}]*\bn\}/', $suffix ) ) )
+                {
                     $suffix .= ' ({n})';
+                    $previous = null;
+                    continue;
+                }
+                $previous = $candidate;
             }
             $result = $candidate;
             $this->report['counts']['renamed'] = ( isset( $this->report['counts']['renamed'] ) ? $this->report['counts']['renamed'] : 0 ) + 1;
@@ -1591,12 +1920,14 @@ class expStaticImportEngine
         foreach ( $this->type->assets( $page ) as $asset )
             $this->assetPaths[$asset] = $this->state->data['pending_assets'][$asset] = true;
 
-        $parentNode = $page['parent_path'] !== '' ? $this->state->nodeOf( $page['parent_path'] ) : $this->parentNode();
-        // a parent the state does not know yet (made by a console step, such as a route container) by its remote id
-        if ( !$parentNode && $page['parent_path'] !== '' && ( $parentObject = eZContentObject::fetchByRemoteID( self::remoteID( $this->label, $page['parent_path'] ) ) ) )
-            $parentNode = (int)$parentObject->attribute( 'main_node_id' );
+        $parentNode = $this->resolveParentNode( $page['parent_path'] );
         if ( !$parentNode )
+        {
             $parentNode = $this->parentNode();
+            // a page at the top that the rules did not put there: its parent is not imported yet
+            if ( $page['parent_path'] !== '' )
+                $this->report['warnings'][] = "$path: its parent {$page['parent_path']} is not imported yet, it went to the top";
+        }
 
         $links = $this->type->links( $page );
         list( $html, $unresolved ) = $this->rewriteLinks( $page['body_html'], $links, $page );
