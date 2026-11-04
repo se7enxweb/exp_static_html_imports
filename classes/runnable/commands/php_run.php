@@ -26,6 +26,7 @@ class Run extends \Exponential\Runnable\Command
                 . "  --source=<folder|url>         the source (default: the type's SourceRepository clone or SourceLocation)\n"
                 . "  --dry-run                     count what would change, write nothing\n"
                 . "  --apply-removals              move pages that left the source to the trash instead of hiding them\n"
+                . "  --overwrite-flagged           write pages an editor changed in the CMS too (their edits are lost)\n"
                 . "  --path=<pattern>              only these source paths (shell pattern, may be repeated)\n"
                 . "  --limit=<n>                   only the first n pages\n"
                 . "  --batch=<n>                   pages per batch (default BatchSize)\n"
@@ -42,7 +43,7 @@ class Run extends \Exponential\Runnable\Command
         ) );
         // the type may be given as --<label> (--doc-html): the types are known only after the start-up has read the
         // extensions' settings, so a flag that is none of the options below becomes --type=<label> before it
-        $known = array( 'type', 'source', 'dry-run', 'apply-removals', 'path', 'limit', 'batch', 'restart', 'no-pull',
+        $known = array( 'type', 'source', 'dry-run', 'apply-removals', 'overwrite-flagged', 'path', 'limit', 'batch', 'restart', 'no-pull',
                         'parent-node', 'user', 'format', 'help', 'siteaccess', 'debug', 'quiet', 'verbose', 'allow-root-user',
                         'no-colors', 'colors', 'logfiles', 'no-logfiles', 'login', 'password' );
         if ( isset( $_SERVER['argv'] ) )
@@ -52,10 +53,10 @@ class Run extends \Exponential\Runnable\Command
                     $_SERVER['argv'][$i] = '--type=' . $m[1];
             $GLOBALS['argv'] = $_SERVER['argv'];
         }
-        $config = '[type:][source:][dry-run][apply-removals][path:*][limit:][batch:][restart][no-pull][parent-node:][user:][format:]';
+        $config = '[type:][source:][dry-run][apply-removals][overwrite-flagged][path:*][limit:][batch:][restart][no-pull][parent-node:][user:][format:]';
         $options = $this->startup( $config, '', array(
             'type' => 'The import type', 'source' => 'The source folder or URL', 'dry-run' => 'Write nothing',
-            'apply-removals' => 'Trash pages that left the source', 'path' => 'Only these paths', 'limit' => 'Only n pages',
+            'apply-removals' => 'Trash pages that left the source', 'overwrite-flagged' => 'Overwrite pages changed in the CMS', 'path' => 'Only these paths', 'limit' => 'Only n pages',
             'batch' => 'Pages per batch', 'restart' => 'Do not resume', 'no-pull' => 'Do not pull the source',
             'parent-node' => 'The parent node of the top pages', 'user' => 'The login to import as', 'format' => 'text or json',
         ) );
@@ -69,6 +70,7 @@ class Run extends \Exponential\Runnable\Command
             'source' => isset( $options['source'] ) ? (string)$options['source'] : '',
             'dry_run' => !empty( $options['dry-run'] ),
             'apply_removals' => !empty( $options['apply-removals'] ),
+            'overwrite_flagged' => !empty( $options['overwrite-flagged'] ),
             'paths' => !empty( $options['path'] ) ? (array)$options['path'] : array(),
             'limit' => !empty( $options['limit'] ) ? (int)$options['limit'] : 0,
             'batch' => !empty( $options['batch'] ) ? (int)$options['batch'] : 0,

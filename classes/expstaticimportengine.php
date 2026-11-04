@@ -90,7 +90,7 @@ class expStaticImportEngine
         $this->rules = expStaticImportRules::load( $this->label );
         $this->options = array_merge( array( 'source' => '', 'dry_run' => false, 'apply_removals' => false, 'batch' => 0,
                                              'limit' => 0, 'paths' => array(), 'resume' => true, 'restart' => false,
-                                             'pull' => true, 'user' => '', 'parent_node' => 0, 'language' => '' ), $options );
+                                             'pull' => true, 'user' => '', 'parent_node' => 0, 'language' => '', 'overwrite_flagged' => false ), $options );
         $this->progress = $progress;
         $this->workDir = self::workDir( $this->label );
         $this->state = new expStaticImportState( $this->workDir . '/state.json' );
@@ -317,8 +317,10 @@ class expStaticImportEngine
 
         if ( $object instanceof eZContentObject )
         {
+            // the hash is taken over the attributes the import wrote then, so a changed attribute map is no edit
             $writtenHash = $previous && isset( $previous['written_hash'] ) ? $previous['written_hash'] : '';
-            if ( $writtenHash !== '' && $this->contentHash( $object, array_keys( $attributes ) ) !== $writtenHash )
+            $writtenFields = $previous && !empty( $previous['written_fields'] ) ? (array)$previous['written_fields'] : array_keys( $attributes );
+            if ( $writtenHash !== '' && !$this->options['overwrite_flagged'] && $this->contentHash( $object, $writtenFields ) !== $writtenHash )
             {
                 $this->report['counts']['flagged']++;
                 $this->report['flagged'][] = array( 'path' => $path, 'object_id' => (int)$object->attribute( 'id' ), 'reason' => 'changed in the CMS since the last import' );
@@ -374,6 +376,7 @@ class expStaticImportEngine
         $this->report['counts'][$status]++;
         $this->state->setPage( $path, array( 'object_id' => (int)$object->attribute( 'id' ), 'node_id' => $node ? (int)$node->attribute( 'node_id' ) : 0,
                                               'source_hash' => $sourceHash, 'written_hash' => $this->contentHash( $object, array_keys( $attributes ) ),
+                                              'written_fields' => array_keys( $attributes ),
                                               'status' => $status, 'class' => $page['class'], 'aliases' => isset( $page['aliases'] ) ? $page['aliases'] : array(),
                                               'child_of' => isset( $page['child_of'] ) ? $page['child_of'] : '',
                                               'duplicate_of' => '' ) );
