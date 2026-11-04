@@ -1045,8 +1045,7 @@ class expStaticImportEngine
                 continue;
             }
             foreach ( (array)$entry['unresolved'] as $target )
-                if ( $this->state->nodeOf( $target ) || $this->state->asset( $target )
-                     || ( strpos( (string)$target, 'page:' ) === 0 && $this->objectByPageId( substr( (string)$target, 5 ) ) ) )
+                if ( $this->targetResolvable( (string)$target ) )
                 {
                     $resolvable = true;
                     break;
@@ -2156,54 +2155,351 @@ class expStaticImportEngine
     }
 
     /**
-     * Links to pages and media already imported become node links and embeds; the others are counted as unresolved
-     * and the page is written again in the links phase.
+     * Every link of a page goes through the link resolver (expStaticImportLinkResolver): a link to an imported page,
+     * or to a media file, becomes a node link (eznode://<node id>[#anchor]), which the output turns into the node's
+     * current address on every render, so it follows moves and renames; an image whose file was imported becomes an
+     * embed of its object. The others keep their address and are counted as unresolved: the page is written again in
+     * the links phase, and exp:static-import:links rewrites the stored bodies once their targets exist.
      *
      * @param string $html
-     * @param array $links href => target path
+     * @param array $links href => target path (the type's own reading; tried when the resolver finds nothing)
      * @param array $page
      * @return array( string html, array unresolved targets )
      */
     protected function rewriteLinks( $html, array $links, array $page )
     {
         $unresolved = array();
-        foreach ( $links as $href => $target )
-        {
-            // page:<id>: the current page with that page id (a Confluence link by id)
-            if ( strpos( (string)$target, 'page:' ) === 0 )
-            {
-                $objectID = $this->objectByPageId( substr( (string)$target, 5 ) );
-                $object = $objectID ? eZContentObject::fetch( $objectID ) : null;
-                $node = $object ? (int)$object->attribute( 'main_node_id' ) : 0;
-            }
-            else
-                $node = $this->state->nodeOf( $target );
+        $resolver = $this->linkResolver();
+        $engine = $this;
+        $counts =& $this->report['counts'];
+        $html = preg_replace_callback( '/(<a\b[^>]*?\bhref\s*=\s*)(["\'])(.*?)\2/is', function ( $m ) use ( $resolver, $page, $links, $engine, &$unresolved, &$counts ) {
+            $result = $resolver->resolve( $page['path'], $m[3] );
+            $node = in_array( $result['status'], array( expStaticImportLinkResolver::NODE, expStaticImportLinkResolver::MEDIA ), true ) ? (int)$result['node'] : 0;
+            // the type's own reading of the link (a target the resolver does not know of)
+            if ( !$node && $result['status'] === expStaticImportLinkResolver::UNRESOLVED && isset( $links[$m[3]] ) )
+                $node = $engine->nodeOfTarget( (string)$links[$m[3]] );
             if ( !$node )
             {
-                $unresolved[] = $target;
-                continue;
-            }
-            $fragment = strpos( $href, '#' ) !== false ? substr( $href, strpos( $href, '#' ) ) : '';
-            $html = str_replace( array( 'href="' . $href . '"', "href='" . $href . "'" ), 'href="eznode://' . $node . $fragment . '"', $html );
-            $this->report['counts']['links']++;
-        }
-        // images: an <img> whose file was imported becomes an embed of its object
-        $state = $this->state;
-        $html = preg_replace_callback( '/<img\b[^>]*\bsrc=["\']([^"\']+)["\'][^>]*>/i', function ( $m ) use ( $page, $state, &$unresolved ) {
-            $target = expStaticImportDom::resolve( $page['path'], $m[1] );
-            if ( $target === null )
+                if ( $result['status'] === expStaticImportLinkResolver::UNRESOLVED )
+                    $unresolved[] = $result['target'] !== '' ? $result['target'] : $result['href'];
                 return $m[0];
-            $asset = $state->asset( $target );
-            if ( !$asset || empty( $asset['object_id'] ) )
+            }
+            $counts['links'] = ( isset( $counts['links'] ) ? $counts['links'] : 0 ) + 1;
+            return $m[1] . '"eznode://' . $node . ( $result['anchor'] !== '' ? '#' . htmlspecialchars( $result['anchor'], ENT_QUOTES ) : '' ) . '"';
+        }, $html );
+        // images: an <img> whose file was imported becomes an embed of its object
+        $html = preg_replace_callback( '/<img\b[^>]*\bsrc=["\']([^"\']+)["\'][^>]*>/i', function ( $m ) use ( $page, $resolver, &$unresolved ) {
+            $result = $resolver->resolve( $page['path'], $m[1], true );
+            if ( $result['status'] !== expStaticImportLinkResolver::MEDIA || !$result['object'] )
             {
-                $unresolved[] = $target;
+                if ( $result['status'] === expStaticImportLinkResolver::UNRESOLVED )
+                {
+                    $unresolved[] = $result['target'] !== '' ? $result['target'] : $result['href'];
+                    // a file of the source the type did not list (a full URL of the site, an encoded name): imported
+                    // in the assets phase, embedded when the page is written again
+                    $this->queueAsset( $result['target'] );
+                }
                 return $m[0];
             }
             $alt = preg_match( '/\balt=["\']([^"\']*)["\']/i', $m[0], $a ) ? $a[1] : '';
             $align = preg_match( '/\bdata-align=["\']([a-z]+)["\']/i', $m[0], $g ) ? ' align="' . $g[1] . '"' : '';
-            return '<img id="eZObject_' . (int)$asset['object_id'] . '" src="' . htmlspecialchars( $m[1] ) . '" alt="' . $alt . '"' . $align . ' />';
+            return '<img id="eZObject_' . (int)$result['object'] . '" src="' . htmlspecialchars( $m[1] ) . '" alt="' . $alt . '"' . $align . ' />';
         }, $html );
         return array( $html, array_values( array_unique( $unresolved ) ) );
+    }
+
+    /**
+     * @param string $target a source path the resolver found for an image
+     */
+    protected function queueAsset( $target )
+    {
+        if ( $target === '' || strpos( $target, 'page:' ) === 0 || !$this->source || !is_file( $this->source . '/' . $target ) )
+            return;
+        $suffixes = $this->rules->getList( 'AssetSuffixes' ) ?: array( 'png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'pdf', 'zip' );
+        if ( !in_array( strtolower( pathinfo( $target, PATHINFO_EXTENSION ) ), $suffixes, true ) )
+            return;
+        $this->assetPaths[$target] = $this->state->data['pending_assets'][$target] = true;
+    }
+
+    /** @var expStaticImportLinkResolver|null */
+    protected $linkResolver;
+
+    /** @var array|null original address => source path (SourceAddressPattern) */
+    protected $sourceAddressMap;
+
+    /** @var array page id => node id */
+    protected $pageIdNodes = array();
+
+    /** @var bool the map holds every page id of the import (preloadPageIdNodes()) */
+    protected $pageIdNodesComplete = false;
+
+    /** @var array remote id => main node of this import's objects (0: none) */
+    protected $remoteNodes = array();
+
+    /** @var bool $remoteNodes holds every object of the import (preloadRemoteNodes()) */
+    protected $remoteNodesComplete = false;
+
+    /**
+     * Every object of this import by its remote id, with its main node, in one query (for a console step).
+     *
+     * @return int the objects known
+     */
+    public function preloadRemoteNodes()
+    {
+        $db = eZDB::instance();
+        $rows = $db->arrayQuery( "SELECT o.remote_id, t.node_id FROM ezcontentobject o JOIN ezcontentobject_tree t ON t.contentobject_id = o.id AND t.node_id = t.main_node_id
+                                  WHERE o.status = 1 AND o.remote_id LIKE '" . $db->escapeString( 'staticimport-' . $this->label . '-' ) . "%'" );
+        foreach ( $rows as $row )
+            $this->remoteNodes[(string)$row['remote_id']] = (int)$row['node_id'];
+        $this->remoteNodesComplete = true;
+        return count( $this->remoteNodes );
+    }
+
+    /**
+     * @param string $path a source path (or a group page's path, ending in "/")
+     * @return int the main node of the object the import made for it, 0 when none
+     */
+    public function nodeByRemotePath( $path )
+    {
+        $remoteID = self::remoteID( $this->label, (string)$path );
+        if ( isset( $this->remoteNodes[$remoteID] ) || $this->remoteNodesComplete )
+            return isset( $this->remoteNodes[$remoteID] ) ? $this->remoteNodes[$remoteID] : 0;
+        // during a run only for a group page (one query each, cached): the other pages are in the state once imported
+        if ( substr( (string)$path, -1 ) !== '/' )
+            return 0;
+        $object = eZContentObject::fetchByRemoteID( $remoteID );
+        return $this->remoteNodes[$remoteID] = $object instanceof eZContentObject ? (int)$object->attribute( 'main_node_id' ) : 0;
+    }
+
+    /**
+     * Every page id of the imported pages with its main node, in one query (a console step resolves thousands of
+     * links by page id; one query each would read the attribute table every time). Of several objects with one page
+     * id, a page wins over a historical copy, a comment or an object a class change replaced.
+     *
+     * @return int the page ids known
+     */
+    public function preloadPageIdNodes()
+    {
+        $identifiers = array();
+        foreach ( $this->rules->getHash( 'AttributeMap' ) as $key => $field )
+            if ( $field === 'page_id' && strpos( (string)$key, '/' ) !== false )
+                $identifiers[] = substr( (string)$key, strpos( (string)$key, '/' ) + 1 );
+        if ( !$identifiers )
+            return 0;
+        $db = eZDB::instance();
+        $list = "'" . implode( "','", array_map( array( $db, 'escapeString' ), array_unique( $identifiers ) ) ) . "'";
+        $rows = $db->arrayQuery( "SELECT a.data_text AS page_id, o.remote_id, c.identifier AS class, t.node_id FROM ezcontentobject_attribute a
+                                  JOIN ezcontentclass_attribute ca ON ca.id = a.contentclassattribute_id AND ca.version = 0 AND ca.identifier IN ( $list )
+                                  JOIN ezcontentobject o ON o.id = a.contentobject_id AND o.current_version = a.version AND o.status = 1
+                                  JOIN ezcontentclass c ON c.id = o.contentclass_id AND c.version = 0
+                                  JOIN ezcontentobject_tree t ON t.contentobject_id = o.id AND t.node_id = t.main_node_id
+                                  WHERE o.remote_id LIKE '" . $db->escapeString( 'staticimport-' . $this->label . '-' ) . "%'
+                                  ORDER BY o.id" );
+        $rank = array();
+        foreach ( $rows as $row )
+        {
+            $id = trim( (string)$row['page_id'] );
+            if ( $id === '' )
+                continue;
+            $weight = preg_match( '/historical|comment/i', (string)$row['class'] ) || strpos( (string)$row['remote_id'], '-was-' ) !== false ? 1 : 0;
+            if ( !isset( $rank[$id] ) || $weight < $rank[$id] )
+            {
+                $rank[$id] = $weight;
+                $this->pageIdNodes[$id] = (int)$row['node_id'];
+            }
+        }
+        $this->pageIdNodesComplete = true;
+        return count( $this->pageIdNodes );
+    }
+
+    /**
+     * The link resolver of this import, with the state's pages and media, the page ids, the site's own hosts
+     * (LinkHosts[]; LinkHostsIfImported[] for hosts only partly imported), the original addresses of a mirrored
+     * source (SourceAddressPattern), IndexFiles[] and LinkForwardParameters[].
+     *
+     * @param bool $refresh build it again (the state changed)
+     * @return expStaticImportLinkResolver
+     */
+    public function linkResolver( $refresh = false )
+    {
+        if ( $this->linkResolver && !$refresh )
+            return $this->linkResolver;
+        $state = $this->state;
+        $engine = $this;
+        $lower = null;
+        $options = array(
+            'page' => function ( $path ) use ( $state, $engine ) {
+                $node = isset( $state->data['pages'][$path] ) || isset( $state->data['assets'][$path] ) ? $state->nodeOf( $path ) : 0;
+                // a page the state does not hold (a group page or container a console step made): by its remote id
+                return $node ?: $engine->nodeByRemotePath( $path );
+            },
+            'page_id' => function ( $id ) use ( $engine ) { return $engine->nodeByPageId( $id ); },
+            'asset' => function ( $path ) use ( $state ) {
+                $asset = $state->asset( $path );
+                return $asset && !empty( $asset['object_id'] ) ? $asset : null;
+            },
+            'caseless' => function ( $path ) use ( $state, &$lower ) {
+                if ( $lower === null )
+                {
+                    $lower = array();
+                    foreach ( array_keys( $state->data['pages'] ) as $known )
+                        if ( !isset( $lower[strtolower( (string)$known )] ) )
+                            $lower[strtolower( (string)$known )] = (string)$known;
+                }
+                return isset( $lower[strtolower( $path )] ) ? $lower[strtolower( $path )] : null;
+            },
+            'hosts' => $this->rules->getList( 'LinkHosts' ),
+            'soft_hosts' => $this->rules->getList( 'LinkHostsIfImported' ),
+            'addresses' => $this->sourceAddresses(),
+            'index_files' => $this->rules->getList( 'IndexFiles' ) ?: array( 'index.html' ),
+        );
+        if ( $this->rules->get( 'LinkForwardParameters', null ) !== null )
+            $options['forward_parameters'] = $this->rules->getList( 'LinkForwardParameters' );
+        return $this->linkResolver = new expStaticImportLinkResolver( $options );
+    }
+
+    /**
+     * SourceAddressPattern (a regular expression whose first group is a page's original address, e.g. HTTrack's
+     * "<!-- Mirrored from (\S+) by HTTrack"): the original address of every file of the source, read from its first
+     * 4 KB, kept in <work folder>/source-addresses.json until the source's commit or the pattern changes.
+     *
+     * @return array original address (no scheme) => source path
+     */
+    public function sourceAddresses()
+    {
+        if ( $this->sourceAddressMap !== null )
+            return $this->sourceAddressMap;
+        $pattern = (string)$this->rules->get( 'SourceAddressPattern', '' );
+        if ( $pattern === '' )
+            return $this->sourceAddressMap = array();
+        $source = $this->source ?: $this->prepareSource();
+        $head = is_dir( $source . '/.git' ) ? trim( (string)shell_exec( 'git -C ' . escapeshellarg( $source ) . ' rev-parse HEAD 2>/dev/null' ) ) : (string)@filemtime( $source );
+        $key = sha1( $pattern . '|' . $head );
+        $cache = $this->workDir . '/source-addresses.json';
+        $cached = is_file( $cache ) ? json_decode( (string)file_get_contents( $cache ), true ) : null;
+        if ( is_array( $cached ) && isset( $cached['key'], $cached['addresses'] ) && $cached['key'] === $key )
+            return $this->sourceAddressMap = (array)$cached['addresses'];
+        $suffixes = $this->rules->getList( 'Suffixes' ) ?: array( 'html', 'htm' );
+        $map = array();
+        $iterator = new RecursiveIteratorIterator( new RecursiveCallbackFilterIterator(
+            new RecursiveDirectoryIterator( $source, FilesystemIterator::SKIP_DOTS | FilesystemIterator::UNIX_PATHS ),
+            function ( $file ) { return $file->getFilename()[0] !== '.'; } ) );
+        foreach ( $iterator as $file )
+        {
+            if ( !$file->isFile() || !in_array( strtolower( $file->getExtension() ), $suffixes, true ) )
+                continue;
+            $head4k = (string)@file_get_contents( $file->getPathname(), false, null, 0, 4096 );
+            if ( @preg_match( $pattern, $head4k, $m ) && isset( $m[1] ) && $m[1] !== '' )
+            {
+                $address = expStaticImportLinkResolver::normalizeAddress( $m[1] );
+                $path = substr( $file->getPathname(), strlen( $source ) + 1 );
+                if ( !isset( $map[$address] ) || strcmp( $path, $map[$address] ) < 0 )
+                    $map[$address] = $path;
+            }
+        }
+        if ( is_dir( $this->workDir ) )
+            @file_put_contents( $cache, json_encode( array( 'key' => $key, 'addresses' => $map ), JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE ) );
+        return $this->sourceAddressMap = $map;
+    }
+
+    /**
+     * @param string $pageId
+     * @return int the main node of the current page with that page id, 0 when it is not imported
+     */
+    public function nodeByPageId( $pageId )
+    {
+        $pageId = (string)$pageId;
+        if ( !isset( $this->pageIdNodes[$pageId] ) && $this->pageIdNodesComplete )
+            return 0;
+        if ( !isset( $this->pageIdNodes[$pageId] ) )
+        {
+            $objectID = $this->objectByPageId( $pageId );
+            $object = $objectID ? eZContentObject::fetch( $objectID ) : null;
+            $this->pageIdNodes[$pageId] = $object ? (int)$object->attribute( 'main_node_id' ) : 0;
+        }
+        return $this->pageIdNodes[$pageId];
+    }
+
+    /**
+     * @param string $target an unresolved target a page's state names (a source path, or page:<page id>)
+     * @return bool it stands for an imported page or media file now
+     */
+    protected function targetResolvable( $target )
+    {
+        if ( $target === '' )
+            return false;
+        if ( $this->state->nodeOf( $target ) || $this->state->asset( $target ) )
+            return true;
+        if ( strpos( $target, 'page:' ) === 0 )
+            return (bool)$this->objectByPageId( substr( $target, 5 ) );
+        $result = $this->linkResolver()->resolve( '', '/' . ltrim( $target, '/' ) );
+        return in_array( $result['status'], array( expStaticImportLinkResolver::NODE, expStaticImportLinkResolver::MEDIA ), true ) && $result['node'];
+    }
+
+    /**
+     * @param string $target a source path, or page:<page id>
+     * @return int the node it stands for, 0 when none
+     */
+    public function nodeOfTarget( $target )
+    {
+        if ( strpos( $target, 'page:' ) === 0 )
+            return $this->nodeByPageId( substr( $target, 5 ) );
+        return $this->state->nodeOf( $target );
+    }
+
+    /**
+     * For the console steps outside the engine (expStaticImportLinkRewriter): the state, the rules, the work folder,
+     * the hash the edit detection compares and a state patch.
+     */
+    public function state()
+    {
+        return $this->state;
+    }
+
+    public function rules()
+    {
+        return $this->rules;
+    }
+
+    public function workDirectory()
+    {
+        return $this->workDir;
+    }
+
+    public function label()
+    {
+        return $this->label;
+    }
+
+    /**
+     * @param eZContentObject $object
+     * @param array $identifiers
+     * @return string
+     */
+    public function writtenHashOf( eZContentObject $object, array $identifiers )
+    {
+        return $this->contentHash( $object, $identifiers );
+    }
+
+    /**
+     * @param array $patch path => values
+     * @param string $what
+     * @return string the patch file
+     */
+    public function addStatePatch( array $patch, $what )
+    {
+        return $this->writeStatePatch( $patch, $what );
+    }
+
+    /**
+     * Prepares the source and the state patches of earlier console steps, without a pull (for a console step).
+     */
+    public function prepareForConsoleStep()
+    {
+        $this->options['pull'] = false;
+        $this->source = $this->prepareSource();
+        $this->loadStatePatches();
+        $this->linkResolver = null;
     }
 
     /**
@@ -2220,8 +2516,7 @@ class expStaticImportEngine
         // only when a link it could not resolve can be resolved now
         $resolvable = false;
         foreach ( isset( $entry['unresolved'] ) ? (array)$entry['unresolved'] : array() as $target )
-            if ( $this->state->nodeOf( $target ) || $this->state->asset( $target )
-                 || ( strpos( (string)$target, 'page:' ) === 0 && $this->objectByPageId( substr( (string)$target, 5 ) ) ) )
+            if ( $this->targetResolvable( (string)$target ) )
             {
                 $resolvable = true;
                 break;

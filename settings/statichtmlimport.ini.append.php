@@ -58,6 +58,13 @@ TypeList[sitemap-crawl]=expStaticImportTypeSitemapCrawl
 # What is no page: NotFoundTitlePatterns[] (error pages by <title>), SkipBinaryPages (default enabled: files with a
 #   page suffix that are no HTML), AssetPages AssetPageMaxText AssetPagePaths[] (the viewer of one image or file is
 #   that media file: it is imported as media and the viewer's path redirects to it)
+# Links (expStaticImportLinkResolver; every link to an imported page or media file is written as eznode://<node>):
+#   LinkHosts[]            the site's own hosts: their full URLs are paths of the source (or original addresses)
+#   LinkHostsIfImported[]  hosts whose pages are linked to their node when imported, else left as external links
+#   SourceAddressPattern   a regular expression whose first group is a file's original address (a mirror's header,
+#                          e.g. /<!-- Mirrored from (\S+) by HTTrack/): links by the old address find the file
+#   LinkForwardParameters[] query parameters carrying the address a link forwards to (default os_destination)
+#   exp:static-import:links rewrites the bodies stored before a target existed (in place, resumable)
 # ---------------------------------------------------------------------------------------------------------------------
 
 [Type_html-generic]
