@@ -95,8 +95,19 @@ Ordners. Manche Exporte sind jedoch flach: Confluence speichert jede Seite eines
 - `NormalizeHeadings` (standardmäßig ausgeschaltet): die höchste Überschrift des Textes wird zur ersten Ebene.
 - `CopyOfPatterns[]`: reguläre Ausdrücke auf den Pfad, deren erste Gruppe die Adresse der kopierten Seite ist (ein
   Ansichtsparameter wie `.../(language)/eng-GB.html`): immer eine Weiterleitung auf diese Seite.
-- Links: eine Adresse ohne Endung führt auf ihre Seite, ein Link mit `pageId=` auf die Seite mit dieser Seiten-ID, eine
-  vollständige Adresse eines Hosts aus `LinkHosts[]` auf ihren Pfad.
+- Links: jeder Link auf eine importierte Seite oder Mediendatei wird als Knotenlink geschrieben, `eznode://<Knoten-ID>`
+  mit seinem Anker, den die Ausgabe bei jeder Darstellung in die aktuelle Adresse des Knotens umsetzt: er folgt
+  Verschiebungen und Umbenennungen, und keine Adresse wird gespeichert. Der Auflöser (`expStaticImportLinkResolver`)
+  liest relative und wurzelrelative Pfade (`..` über der obersten Ebene bleibt oben, wie im Browser), URL-kodierte
+  Namen (`%2b`, `%20`) in jeder Schreibweise, eine Adresse ohne Endung (ihre Seite oder Indexdatei), einen Link mit
+  `pageId=` (die Seite mit dieser Seiten-ID), eine vollständige Adresse eines Hosts aus `LinkHosts[]` (ihr Pfad oder
+  ihre ursprüngliche Adresse), `LinkHostsIfImported[]` (Hosts, die nur zum Teil importiert sind: verlinkt, wenn
+  importiert, sonst unverändert), `SourceAddressPattern` (der Kopfkommentar eines Spiegels mit der ursprünglichen
+  Adresse jeder Datei, sodass `doc.ez.no/.../4.7` die Datei findet, die HTTrack als `4.html` schrieb) und
+  `LinkForwardParameters[]` (ein Anmeldelink mit `os_destination=` führt auf diese Seite). Ein Bild, dessen Datei
+  importiert ist, wird über sein Objekt eingebettet; ein Link auf eine Datei ist ein Knotenlink auf ihren Knoten. Ein
+  Link, der sich nicht auflösen lässt, behält seine Adresse und wird mit Form und Grund gemeldet; `mailto:`, Anker,
+  externe Links und Template-Platzhalter bleiben, wie sie sind.
 
 ## Autorenzeilen: wer eine Seite geschrieben hat, und jede Person, die sie nennt
 
@@ -211,6 +222,7 @@ kommt in einen Status-Patch in `state-patches/` des Arbeitsordners, den dieser L
 |---|---|
 | `exp:static-import:route --type=<label> [--all] [--batch=<n>] [--resume] [--limit=<n>]` | geroutete Seiten in ihre Container; mit `--all` jede Seite unter die Elternseite, die ihr die Regeln heute geben, benannt nach `NameRules[]`, Kopien und Reste abgelegt; Knoten-IDs bleiben, alte Adressen leiten weiter; alle n Seiten eine Fortschrittszeile und ein Cursor, `--resume` setzt fort |
 | `exp:static-import:relink --type=<label> [--comments]` | Seiten, deren statische Links sich jetzt auflösen lassen, oder jede Seite mit Kommentaren, erneut importiert |
+| `exp:static-import:links --type=<label> [--dry-run] [--batch=200] [--limit=N] [--restart] [--object=<id>]` | die Links der gespeicherten Texte als Knotenlinks neu geschrieben, an Ort und Stelle (keine neue Version, keine Redakteursänderung: die Vergleichsbasis der Änderungserkennung geht mit), in Stapeln mit gespeicherter Position, nur die Ansichts-Caches der geänderten Seiten geleert; jeder nicht auflösbare Link pro Seite in `links-unresolved.jsonl` |
 | `exp:static-import:hide-non-pages --type=<label>` | verbirgt importierte Seiten, die heute keine Seiten sind (Fehlerseiten, Binärdateien, Ansichten, Kopien, ausgeschlossene) |
 | `exp:static-import:bylines --type=<label> [--fill [--replace-roles]]` | die Prüfung der Autorenzeilen auf Datenverlust, und das Auffüllen |
 | `exp:static-import:comments --type=<label> [--trash-replaced]` | die Prüfung der Kommentare auf Datenverlust, und das Entfernen der von ihnen ersetzten Objekte |

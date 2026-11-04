@@ -145,8 +145,17 @@ unique. An object a class change replaced (remote id `<id>-was-<class>`) takes n
 - `NormalizeHeadings` (disabled by default): the highest heading of the text becomes the first level.
 - `CopyOfPatterns[]`: regular expressions on the path whose first group is the address of the page it copies (a view
   parameter such as `.../(language)/eng-GB.html`): always a redirect to that page.
-- Links: an address without a suffix goes to its page, a link with `pageId=` to the page with that page id, a full URL
-  of a host of `LinkHosts[]` to its path.
+- Links: every link to an imported page or media file is written as a node link, `eznode://<node id>` with its
+  anchor, which the output turns into the node's current address on every render: it follows moves and renames, and
+  no address is stored. The resolver (`expStaticImportLinkResolver`) reads relative and root-relative paths (`..`
+  above the top stays at the top, as in a browser), URL-encoded names (`%2b`, `%20`) in any case, an address without
+  a suffix (its page or index file), a link with `pageId=` (the page with that page id), a full URL of a host of
+  `LinkHosts[]` (its path, or its original address), `LinkHostsIfImported[]` (hosts only partly in the import:
+  linked when imported, else left as they are), `SourceAddressPattern` (a mirror's header naming each file's
+  original address, so `doc.ez.no/.../4.7` finds the file HTTrack wrote as `4.html`) and `LinkForwardParameters[]`
+  (a login link with `os_destination=` goes to that page). An image whose file is imported is embedded by its
+  object; a link to a file is a node link to the file's node. A link it cannot resolve keeps its address and is
+  reported with its form and the reason; `mailto:`, anchors, external links and template placeholders stay as they are.
 
 ## Comments
 
@@ -204,6 +213,7 @@ patch in `state-patches/` of the work folder, which that run merges first.
 |---|---|
 | `exp:static-import:route --type=<label> [--all] [--batch=<n>] [--resume] [--limit=<n>]` | routed pages into their containers; with `--all` every page below the parent the rules give it today, named by `NameRules[]`, copies and leftovers retired; node ids are kept and old addresses redirect; a progress line and a cursor every n pages, `--resume` continues |
 | `exp:static-import:relink --type=<label> [--comments]` | pages whose static links can be resolved now, or every page with comments, imported again |
+| `exp:static-import:links --type=<label> [--dry-run] [--batch=200] [--limit=N] [--restart] [--object=<id>]` | the links of the stored bodies rewritten as node links, in place (no new version, no editor change: the edit detection's baseline moves with it), in batches with a saved position, only the changed pages' view caches cleared; every unresolved link per page in `links-unresolved.jsonl` |
 | `exp:static-import:hide-non-pages --type=<label>` | hides imported pages that are no pages today (error pages, binary files, viewers, copies, excluded) |
 | `exp:static-import:bylines --type=<label> [--fill [--replace-roles]]` | the no-data-loss audit of the bylines, and the fill |
 | `exp:static-import:comments --type=<label> [--trash-replaced]` | the no-data-loss audit of the comments, and the removal of the objects they replaced |
