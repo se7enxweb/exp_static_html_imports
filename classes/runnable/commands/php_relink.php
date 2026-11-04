@@ -22,7 +22,7 @@ class Relink extends \Exponential\Runnable\Command
                 . "on. Lists the targets still unresolved, the most frequent first.\n\n"
                 . "  --type=<label>     the import type (e.g. doc-html)\n"
                 . "  --path=<pattern>   only these source paths (shell pattern, may be repeated)\n"
-                . "  --comments         every page whose source holds comments (CommentMarkers[]), its comments written again\n"
+                . "  --comments         every page whose source holds comments (CommentMarkers[]): only its comments written again\n"
                 . "  --dry-run          count, change nothing\n"
                 . "  --format=json      as JSON",
             'use-session' => false, 'use-modules' => true, 'use-extensions' => true
@@ -45,6 +45,8 @@ class Relink extends \Exponential\Runnable\Command
         {
             foreach ( array_slice( $result['targets'], 0, 20, true ) as $target => $count )
                 $this->output( sprintf( '  %5d  %s', $count, $target ) );
+            if ( isset( $result['comments'] ) )
+                $this->output( sprintf( '%d comments written (only the comments of the pages with comments)', $result['comments'] ) );
             $this->output( sprintf( 'PASS %d pages with static links, %d written again (%d links resolved now), %d links still unresolved, %d flagged, %d failed',
                                     $result['pages'], $result['rewritten'], $result['links'], $result['unresolved'], $result['flagged'], $result['failed'] ) );
         }

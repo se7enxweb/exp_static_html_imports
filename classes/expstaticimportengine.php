@@ -663,8 +663,9 @@ class expStaticImportEngine
         {
             $path = (string)$path;
             $entry = $this->state->page( $path );
+            // (with $markers only the comments are written, so a page edited in the CMS, flagged, keeps its own text)
             if ( empty( $entry['object_id'] ) || ( empty( $entry['unresolved'] ) && !$markers ) || strpos( $path, '#' ) !== false
-                 || ( isset( $entry['status'] ) && in_array( $entry['status'], array( 'removed', 'duplicate', 'failed', 'flagged' ), true ) ) )
+                 || ( isset( $entry['status'] ) && in_array( $entry['status'], $markers ? array( 'removed', 'duplicate', 'failed' ) : array( 'removed', 'duplicate', 'failed', 'flagged' ), true ) ) )
                 continue;
             if ( $patterns && !expStaticImportHtmlType::matchesAny( $path, $patterns ) )
                 continue;
@@ -681,6 +682,33 @@ class expStaticImportEngine
                         $resolvable = true;
                 if ( !$resolvable )
                     continue;
+                if ( $dryRun )
+                {
+                    $out['rewritten']++;
+                    continue;
+                }
+                // only the page's comments, each written again (a fix of how they are written reaches them too):
+                // the page itself is left alone, it may be edited in the CMS or being moved by a route step
+                foreach ( isset( $carried[$path] ) ? $carried[$path] : array() as $childPath )
+                    $this->state->setPage( $childPath, array( 'source_hash' => '' ) );
+                $failed = $this->report['counts']['failed'];
+                $flagged = $this->report['counts']['flagged'];
+                $written = $this->importCarried( $path, $user );
+                $out['comments'] = ( isset( $out['comments'] ) ? $out['comments'] : 0 ) + $written;
+                $out['failed'] += $this->report['counts']['failed'] - $failed;
+                $out['flagged'] += $this->report['counts']['flagged'] - $flagged;
+                if ( $written )
+                    $out['rewritten']++;
+                foreach ( $this->state->data['pages'] as $childPath => $childEntry )
+                    if ( strpos( (string)$childPath, $path . '#' ) === 0 )
+                        $patch[(string)$childPath] = $childEntry;
+                // a patch every 100 pages, so a stopped run keeps what it wrote
+                if ( $out['rewritten'] && $out['rewritten'] % 100 === 0 && $patch )
+                {
+                    $out['patch'] = $this->writeStatePatch( $patch, 'relink-comments' );
+                    $patch = array();
+                }
+                continue;
             }
             foreach ( (array)$entry['unresolved'] as $target )
                 if ( $this->state->nodeOf( $target ) || $this->state->asset( $target )
@@ -1304,6 +1332,36 @@ class expStaticImportEngine
      * @param string $path
      * @param eZUser $user
      */
+    /**
+     * Writes only the pages a page carries (its comments, with their replies below the comment they answer), never the
+     * page itself (relink --comments).
+     *
+     * @param string $path
+     * @param eZUser $user
+     * @return int the comments written, created or found unchanged
+     */
+    protected function importCarried( $path, eZUser $user )
+    {
+        try
+        {
+            $page = $this->type->parse( $this->source, $path );
+            if ( !is_array( $page ) || isset( $page['redirect_to'] ) || isset( $page['asset_of'] ) || empty( $page['children'] ) )
+                return 0;
+        }
+        catch ( Throwable $e )
+        {
+            $this->fail( $path, get_class( $e ) . ': ' . $e->getMessage() );
+            return 0;
+        }
+        $before = $this->report['counts']['created'] + $this->report['counts']['updated'] + $this->report['counts']['unchanged'];
+        foreach ( (array)$page['children'] as $child )
+        {
+            $child['child_of'] = $path;
+            $this->importParsedPage( $this->type->map( $child ), $user );
+        }
+        return $this->report['counts']['created'] + $this->report['counts']['updated'] + $this->report['counts']['unchanged'] - $before;
+    }
+
     protected function importPage( $path, eZUser $user )
     {
         try

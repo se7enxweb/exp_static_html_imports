@@ -130,6 +130,29 @@ class expStaticImportDocHtmlFixtureTest extends \PHPUnit\Framework\TestCase
         $this->assertSame( "Kara\u{015B}", expStaticImportDom::decodeText( 'Kara&#347;' ) );
     }
 
+    public function testRepliesInsideTheCommentBoxNestAsDeepAsTheSource()
+    {
+        // the old site's markup: a reply list inside the comment's div.class-comment, four levels below its <li>,
+        // and a list in a comment's text that is no reply
+        $page = $this->type->parse( $this->source, 'Manual/1.0/Chapter/Deep.html' );
+        $this->assertCount( 2, $page['children'] );
+        list( $first, $fourth ) = $page['children'];
+        $this->assertSame( array( '1', '' ), array( $first['meta']['comment_id'], $first['meta']['parent_comment_id'] ) );
+        $this->assertSame( array(), $fourth['children'] );
+        $second = $first['children'][0];
+        $this->assertCount( 1, $first['children'] );
+        $this->assertSame( array( '2', '1', 'Second', 'Reader 2' ), array( $second['meta']['comment_id'], $second['meta']['parent_comment_id'], $second['title'], $second['meta']['author'] ) );
+        $this->assertStringContainsString( 'a list item of the text', $second['body_html'] );
+        $third = $second['children'][0];
+        $this->assertCount( 1, $second['children'] );
+        $this->assertSame( array( '3', '2', 'Reader 3' ), array( $third['meta']['comment_id'], $third['meta']['parent_comment_id'], $third['meta']['author'] ) );
+        $this->assertSame( 'Manual/1.0/Chapter/Deep.html#comment2', $third['parent_fixed'] );
+        // a comment's own markup leaves its replies out, and keeps its text's list
+        $this->assertStringNotContainsString( 'comment2', $first['original_html'] );
+        $this->assertStringContainsString( 'a list item of the text', $second['original_html'] );
+        $this->assertStringNotContainsString( 'Deepest', $second['original_html'] );
+    }
+
     public function testRedirectStubsAndErrorPages()
     {
         $stub = $this->type->parse( $this->source, 'moved.html' );

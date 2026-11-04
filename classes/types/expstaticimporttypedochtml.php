@@ -317,33 +317,78 @@ class expStaticImportTypeDocHtml extends expStaticImportHtmlType
             if ( !$li instanceof DOMElement || $li->nodeName !== 'li' )
                 continue;
             $position++;
-            $heading = expStaticImportDom::first( $doc, '.attribute-heading', $li );
+            $heading = $this->ownFirst( $doc, '.attribute-heading', $li );
             $id = $heading && preg_match( '/(\d+)/', $heading->getAttribute( 'id' ), $m ) ? $m[1] : (string)$position;
-            $title = ( $h = expStaticImportDom::first( $doc, '.attribute-heading h2', $li ) ) ? expStaticImportDom::text( $h ) : '';
-            $date = ( $d = expStaticImportDom::first( $doc, 'p.date', $li ) ) ? expStaticImportDom::text( $d ) : '';
-            $author = ( $a = expStaticImportDom::first( $doc, 'p.author', $li ) ) ? expStaticImportDom::text( $a ) : '';
-            $textNode = expStaticImportDom::first( $doc, '.attribute-short', $li );
+            $title = ( $h = $this->ownFirst( $doc, '.attribute-heading h2', $li ) ) ? expStaticImportDom::text( $h ) : '';
+            $date = ( $d = $this->ownFirst( $doc, 'p.date', $li ) ) ? expStaticImportDom::text( $d ) : '';
+            $author = ( $a = $this->ownFirst( $doc, 'p.author', $li ) ) ? expStaticImportDom::text( $a ) : '';
+            $textNode = $this->ownFirst( $doc, '.attribute-short', $li );
             $text = $textNode ? trim( expStaticImportDom::innerHtml( $textNode ) ) : '';
+            // the replies: the list whose nearest <li> is this comment's (the old site puts it inside the comment's
+            // div.class-comment, four levels down), never a list of the comment's text
+            $replies = $this->replyList( $li );
             // the comment's own markup without its replies is kept as the original
             $own = $li->cloneNode( true );
-            foreach ( iterator_to_array( $own->getElementsByTagName( 'ul' ) ) as $nested )
-                if ( $nested->parentNode === $own || ( $nested->parentNode && $nested->parentNode->parentNode === $own ) )
-                    $nested->parentNode->removeChild( $nested );
+            if ( $ownReplies = $this->replyList( $own ) )
+                $ownReplies->parentNode->removeChild( $ownReplies );
             $comment = $this->commentPage( $pagePath, $parentPath, $class, $id, $title !== '' ? $title : 'Comment by ' . ( $author !== '' ? $author : 'an unknown reader' ),
                                            $author, $date !== '' ? $this->commentTime( $date ) : null, $text, trim( $doc->saveHTML( $own ) ), $position );
-            $commentPath = $comment['path'];
-            foreach ( $li->getElementsByTagName( 'ul' ) as $nested )
-            {
-                // only the replies list of this <li>, not the lists inside the comment text
-                if ( $nested->parentNode === $li || ( $nested->parentNode && $nested->parentNode->parentNode === $li ) )
-                {
-                    $comment['children'] = $this->commentList( $doc, $nested, $pagePath, $commentPath, $class );
-                    break;
-                }
-            }
+            if ( $replies )
+                $comment['children'] = $this->commentList( $doc, $replies, $pagePath, $comment['path'], $class );
             $comments[] = $comment;
         }
         return $comments;
+    }
+
+    /**
+     * @param DOMNode $node
+     * @return DOMElement|null the nearest <li> above a node that is a comment's, not one of a list in a comment's text
+     */
+    protected function commentItemOf( DOMNode $node )
+    {
+        // inside a comment's text (.attribute-short) the <li> below the text are its lists: the comment's <li> is the
+        // first one above the text
+        $chain = array();
+        $text = -1;
+        for ( $n = $node->parentNode; $n instanceof DOMElement; $n = $n->parentNode )
+        {
+            if ( $text < 0 && strpos( ' ' . $n->getAttribute( 'class' ) . ' ', ' attribute-short ' ) !== false )
+                $text = count( $chain );
+            $chain[] = $n;
+        }
+        foreach ( $chain as $i => $n )
+            if ( $i > $text && $n->nodeName === 'li' )
+                return $n;
+        return null;
+    }
+
+    /**
+     * @return DOMElement|null the first element of the selector that belongs to this comment, not to a reply
+     */
+    protected function ownFirst( DOMDocument $doc, $selector, DOMElement $li )
+    {
+        foreach ( explode( ',', (string)$selector ) as $alternative )
+            foreach ( expStaticImportDom::query( $doc, $alternative, $li ) as $node )
+                if ( $node instanceof DOMElement && ( $node === $li || $this->commentItemOf( $node ) === $li ) )
+                    return $node;
+        return null;
+    }
+
+    /**
+     * @return DOMElement|null the list of a comment's replies: a <ul> whose comment <li> is this one, outside its text
+     */
+    protected function replyList( DOMElement $li )
+    {
+        foreach ( iterator_to_array( $li->getElementsByTagName( 'ul' ) ) as $ul )
+        {
+            if ( $this->commentItemOf( $ul ) !== $li )
+                continue;
+            for ( $n = $ul->parentNode; $n instanceof DOMElement && $n !== $li; $n = $n->parentNode )
+                if ( strpos( ' ' . $n->getAttribute( 'class' ) . ' ', ' attribute-short ' ) !== false )
+                    continue 2;
+            return $ul;
+        }
+        return null;
     }
 
     protected function fields( array $page )
