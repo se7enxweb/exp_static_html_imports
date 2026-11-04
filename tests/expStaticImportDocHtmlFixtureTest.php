@@ -147,6 +147,9 @@ class expStaticImportDocHtmlFixtureTest extends \PHPUnit\Framework\TestCase
         $this->assertCount( 1, $second['children'] );
         $this->assertSame( array( '3', '2', 'Reader 3' ), array( $third['meta']['comment_id'], $third['meta']['parent_comment_id'], $third['meta']['author'] ) );
         $this->assertSame( 'Manual/1.0/Chapter/Deep.html#comment2', $third['parent_fixed'] );
+        // a comment's code is cleaned as a page's: one literal, its line markup gone; the original keeps the markup
+        $this->assertStringContainsString( "<pre class=\"wordwrap\">x = 1\ny = 2</pre>", $third['body_html'] );
+        $this->assertStringContainsString( '<span class="line">x = 1</span>', $third['original_html'] );
         // a comment's own markup leaves its replies out, and keeps its text's list
         $this->assertStringNotContainsString( 'comment2', $first['original_html'] );
         $this->assertStringContainsString( 'a list item of the text', $second['original_html'] );

@@ -220,7 +220,7 @@ class expStaticImportTypeDocHtml extends expStaticImportHtmlType
         // so their references are decoded (the original markup stays as the source has it)
         $title = expStaticImportDom::decodeText( $title );
         $author = expStaticImportDom::decodeText( $author );
-        $text = expStaticImportDom::decodeDoubleEncoded( $text );
+        $text = expStaticImportDom::decodeDoubleEncoded( $this->cleanCommentText( $text ) );
         return array(
             'path' => $commentPath,
             'title' => $title,
@@ -238,6 +238,25 @@ class expStaticImportTypeDocHtml extends expStaticImportHtmlType
             'priority' => $position,
             'children' => array(),
         );
+    }
+
+    /**
+     * A comment's text cleaned as a page body is (the page's own cleaner rules: code lines become one literal, code
+     * and panel macros their custom tags), in a document of its own so the original markup stays as it is.
+     *
+     * @param string $html
+     * @return string
+     */
+    protected function cleanCommentText( $html )
+    {
+        if ( trim( (string)$html ) === '' )
+            return '';
+        $doc = expStaticImportDom::load( '<html><head><meta charset="utf-8"></head><body><div id="static-import-comment-text">' . $html . '</div></body></html>' );
+        $box = $doc->getElementById( 'static-import-comment-text' );
+        if ( !$box instanceof DOMElement )
+            return (string)$html;
+        $cleaner = new expStaticImportHtmlCleaner( $this->rules );
+        return trim( $cleaner->clean( $doc, $box ) );
     }
 
     /**
