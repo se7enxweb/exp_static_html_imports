@@ -569,15 +569,32 @@ class expStaticImportEngine
             $node = $this->state->nodeOf( $path );
             if ( !$node )
                 continue;
+            // an alias of the node's own address (linked to the element of its name), never a new original: that
+            // would replace the clean address the node has from its name
+            $link = self::nameElementID( $node );
+            if ( !$link )
+                continue;
             foreach ( array_unique( array( preg_replace( '/\.html?$/i', '', $path ), $path ) ) as $old )
             {
                 $old = ( $prefix !== '' ? $prefix . '/' : '' ) . $old;
-                $result = eZURLAliasML::storePath( $old, 'eznode:' . $node, $this->language() ?: false, false, true, false, false, false, false, true );
+                $result = eZURLAliasML::storePath( $old, 'eznode:' . $node, $this->language() ?: false, $link, true, false, false, false, false, true );
                 if ( isset( $result['status'] ) && $result['status'] === true )
                     $this->report['counts']['redirects']++;
             }
             $this->state->setPage( $path, array( 'redirected' => true ) );
         }
+    }
+
+    /**
+     * @param int $nodeID
+     * @return int the id of the URL alias element a node has from its name (0 when it has none yet)
+     */
+    public static function nameElementID( $nodeID )
+    {
+        foreach ( (array)eZURLAliasML::fetchByAction( 'eznode', (int)$nodeID ) as $element )
+            if ( (int)$element->attribute( 'is_original' ) === 1 && (int)$element->attribute( 'is_alias' ) === 0 )
+                return (int)$element->attribute( 'id' );
+        return 0;
     }
 
     /**
