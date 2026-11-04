@@ -36,7 +36,7 @@ $check = function ( $ok, $what ) use ( &$failures )
 $stop = function ( $why )
 {
     echo "FAIL $why\n";
-    exit( 1 );
+    eZScript::instance()->shutdown( 1 );
 };
 
 // 1. the throwaway database
@@ -196,4 +196,4 @@ $check( $audit['missing'] === 0, "byline audit: {$audit['people']} people, {$aud
 $check( $audit['unknown'] === 1, "byline audit: the one unknown variant of the fixture is listed ({$audit['unknown']})" );
 
 echo ( $failures ? "FAIL $failures check(s) failed" : 'PASS every check' ) . " (the copy and its files stay in $work for a look; the next run overwrites them)\n";
-exit( $failures ? 1 : 0 );
+eZScript::instance()->shutdown( $failures ? 1 : 0 );
