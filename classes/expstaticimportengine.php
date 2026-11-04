@@ -361,6 +361,10 @@ class expStaticImportEngine
             $status = 'created';
         }
 
+        // read back what was published (datatypes may normalise a value on publish), so the written hash is of what
+        // the next run will find
+        eZContentObject::clearCache( array( (int)$object->attribute( 'id' ) ) );
+        $object = eZContentObject::fetch( (int)$object->attribute( 'id' ) );
         $node = $object->attribute( 'main_node' );
         if ( $node instanceof eZContentObjectTreeNode )
         {
