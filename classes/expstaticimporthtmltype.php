@@ -633,7 +633,7 @@ abstract class expStaticImportHtmlType implements expStaticImportTypeInterface
             if ( strpos( $key, '/' ) === false )
                 continue;
             list( $mapClass, $attribute ) = explode( '/', $key, 2 );
-            if ( $mapClass !== $class && $mapClass !== '*' )
+            if ( $mapClass !== $page['class'] && $mapClass !== '*' )
                 continue;
             if ( isset( $fields[$field] ) )
                 $attributes[$attribute] = $fields[$field];
