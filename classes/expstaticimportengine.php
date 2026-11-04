@@ -962,6 +962,32 @@ class expStaticImportEngine
     }
 
     /**
+     * The path below which the old addresses are stored: RedirectPrefix, else the address of the import's top node
+     * when the site serves that node as its root (a site with a PathPrefix such as websites/documentation looks every
+     * address up below it, so an alias stored at the top of the table would never answer).
+     *
+     * @return string without slashes at the ends, '' for the top
+     */
+    protected function redirectPrefix()
+    {
+        $prefix = trim( (string)$this->rules->get( 'RedirectPrefix', '' ), '/' );
+        if ( $prefix !== '' )
+            return $prefix === '-' ? '' : $prefix;
+        $top = eZContentObjectTreeNode::fetch( $this->parentNode() );
+        if ( !$top instanceof eZContentObjectTreeNode )
+            return '';
+        $path = trim( (string)$top->attribute( 'path_identification_string' ), '/' );
+        // only when that address is a PathPrefix of a siteaccess: the site's own addresses are below it
+        foreach ( (array)eZINI::instance()->variable( 'SiteAccessSettings', 'AvailableSiteAccessList' ) as $siteaccess )
+        {
+            $ini = eZSiteAccess::getIni( $siteaccess, 'site.ini' );
+            if ( $ini && $ini->hasVariable( 'SiteAccessSettings', 'PathPrefix' ) && strcasecmp( trim( (string)$ini->variable( 'SiteAccessSettings', 'PathPrefix' ), '/' ), $path ) === 0 )
+                return $path;
+        }
+        return '';
+    }
+
+    /**
      * After the pages of a step: the links (node_id / object_id in the XML of the current versions) and the object
      * relations to the merged copies point at the pages they were merged into; then each copy that nothing refers to
      * any more goes to the trash ($trash) and its addresses redirect to the page, or it is hidden in RetiredParent.
@@ -1037,7 +1063,8 @@ class expStaticImportEngine
             {
                 if ( !$link || strpos( $old, '(' ) !== false || strpos( $old, '#' ) !== false )
                     continue;
-                $result = eZURLAliasML::storePath( $old, 'eznode:' . $copy['keep'], $this->language() ?: false, $link, true, false, false, false, false, true );
+                $prefix = $this->redirectPrefix();
+                $result = eZURLAliasML::storePath( ( $prefix !== '' ? $prefix . '/' : '' ) . $old, 'eznode:' . $copy['keep'], $this->language() ?: false, $link, true, false, false, false, false, true );
                 if ( isset( $result['status'] ) && $result['status'] === true )
                     $out['merge_redirects'] = ( isset( $out['merge_redirects'] ) ? $out['merge_redirects'] : 0 ) + 1;
             }
@@ -2892,7 +2919,7 @@ class expStaticImportEngine
      */
     protected function createRedirects( array $paths )
     {
-        $prefix = trim( (string)$this->rules->get( 'RedirectPrefix', '' ), '/' );
+        $prefix = $this->redirectPrefix();
         foreach ( $paths as $path )
         {
             $entry = $this->state->page( $path );

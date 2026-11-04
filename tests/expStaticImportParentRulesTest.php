@@ -172,4 +172,17 @@ class expStaticImportParentRulesTest extends \PHPUnit\Framework\TestCase
                                                                             ), 'index-copies' );
         $this->assertSame( 'Guide.html', $type->copyOf( 'Other.html' ) );
     }
+
+    public function testABreadcrumbThroughACopyLeadsToThePageOfThatId()
+    {
+        list( $type ) = $this->type( array(
+            'BreadcrumbSelector' => '#breadcrumbs a',
+            'BreadcrumbPaths' => array( 'display/**', 'pages/**' ),
+            'DuplicatePatterns' => array( '#^pages/#' ),
+            'RouteMeta' => array( 'page_id' => '/name="ajs-page-id" content="(\d+)"/' ),
+        ), 'crumb-copies' );
+        // the crumb links Confluence's copy pages/viewpage00cc.html of page 100: its parent is display/SPC/Current.html
+        $this->assertSame( 'display/SPC/Current.html', $type->parentPath( 'display/SPC/Under.html' ) );
+        $this->assertSame( 'display/SPC.html', $type->parentPath( 'display/SPC/Current.html' ) );
+    }
 }

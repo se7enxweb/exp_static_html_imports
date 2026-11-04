@@ -228,6 +228,7 @@ abstract class expStaticImportHtmlType implements expStaticImportTypeInterface
         $routedPatterns = array();
         foreach ( $this->rules->getList( 'RouteRules' ) as $line )
             $routedPatterns[] = trim( strtok( $line, ';' ) );
+        $crumbTrails = array();
         foreach ( $paths as $path )
         {
             $read = $selector !== '' && ( !$crumbPaths || self::matchesAny( $path, $crumbPaths ) );
@@ -243,18 +244,41 @@ abstract class expStaticImportHtmlType implements expStaticImportTypeInterface
             $doc = expStaticImportDom::load( $html );
             if ( $read )
             {
-                $parent = '';
+                $crumbs = array();
                 foreach ( expStaticImportDom::query( $doc, $selector ) as $link )
                 {
                     $target = $link instanceof DOMElement ? expStaticImportDom::resolve( $path, $link->getAttribute( 'href' ) ) : null;
                     if ( $target !== null && $target !== $path && isset( $known[$target] ) )
-                        $parent = $target;
+                        $crumbs[] = $target;
                 }
-                if ( $parent !== '' )
-                    $this->breadcrumbParents[$path] = $parent;
+                if ( $crumbs )
+                    $crumbTrails[$path] = $crumbs;
             }
             if ( $needTitle && ( $node = expStaticImportDom::first( $doc, $titleSelector ) ) && ( $text = expStaticImportDom::text( $node ) ) !== '' )
                 $folderTitles[dirname( $path )] = $text;
+        }
+        // the nearest crumb is the parent; a crumb that is a copy of a page (DuplicatePatterns[]: Confluence's
+        // pages/viewpage<n>.html, which its breadcrumbs link) stands for the page with the same page id
+        // (RouteMeta[page_id]), so a space's pages nest below their space's pages, never below a copy
+        $crumbIDs = array();
+        foreach ( $crumbTrails as $path => $crumbs )
+        {
+            $parent = '';
+            foreach ( $crumbs as $target )
+            {
+                if ( $this->isDuplicateCandidate( $target ) && $idPattern !== '' )
+                {
+                    if ( !array_key_exists( $target, $crumbIDs ) )
+                        $crumbIDs[$target] = @preg_match( $idPattern, (string)@file_get_contents( rtrim( $source, '/' ) . '/' . $target ), $cm ) && isset( $cm[1] ) ? $cm[1] : '';
+                    $id = $crumbIDs[$target];
+                    if ( $id === '' || !isset( $this->pageIdPaths[$id] ) || $this->pageIdPaths[$id] === $path )
+                        continue;
+                    $target = $this->pageIdPaths[$id];
+                }
+                $parent = $target;
+            }
+            if ( $parent !== '' )
+                $this->breadcrumbParents[$path] = $parent;
         }
         if ( $groupFolders )
         {
