@@ -71,6 +71,73 @@ abstract class expStaticImportHtmlType implements expStaticImportTypeInterface
     /** @var array path => array( 'container' => ..., 'name' => ..., 'meta' => array, 'current' => page id ) */
     protected $routes = array();
 
+    /** @var string the bare history clone of the source repository (GitAuthors) */
+    protected $historyDir = '';
+
+    /** @var array|null path => array( 'first' => array( name, time ), 'last' => array( name, time ), 'names' => list ) */
+    protected $gitAuthors = null;
+
+    /**
+     * @param string $dir
+     */
+    public function setHistoryDir( $dir )
+    {
+        $this->historyDir = (string)$dir;
+        $this->gitAuthors = null;
+    }
+
+    /**
+     * GitAuthors=enabled: the people who wrote and changed each page by the history of the source repository, for the
+     * pages of GitAuthorPaths[] (shell patterns). GitAuthorMap[<e-mail or git name>]=<name> joins several git
+     * identities into one person (only the name is used, never the e-mail); GitAuthorSkip[] names identities that are
+     * no authors (bots). A page whose source has no byline gets the first author as written_by and the last as
+     * last_updated_by, with the dates of those commits; every author is one of its contributors.
+     *
+     * @return array path => authors
+     */
+    public function gitAuthors()
+    {
+        if ( $this->gitAuthors !== null )
+            return $this->gitAuthors;
+        $this->gitAuthors = array();
+        $patterns = $this->rules->getList( 'GitAuthorPaths' );
+        if ( !$this->rules->enabled( 'GitAuthors', false ) || !$patterns || $this->historyDir === '' || !is_dir( $this->historyDir ) )
+            return $this->gitAuthors;
+        $map = array_change_key_case( $this->rules->getHash( 'GitAuthorMap' ), CASE_LOWER );
+        $skip = array_map( 'strtolower', $this->rules->getList( 'GitAuthorSkip' ) );
+        $specs = '';
+        foreach ( $patterns as $pattern )
+            $specs .= ' ' . escapeshellarg( ':(glob)' . $pattern );
+        $command = 'git -c core.quotepath=off -C ' . escapeshellarg( $this->historyDir ) . ' log --no-renames --name-only --format=' . escapeshellarg( '@%at|%an|%ae' ) . ' HEAD --' . $specs . ' 2>/dev/null';
+        $handle = popen( $command, 'r' );
+        if ( !$handle )
+            return $this->gitAuthors;
+        $commit = null;
+        while ( ( $line = fgets( $handle ) ) !== false )
+        {
+            $line = rtrim( $line, "\r\n" );
+            if ( $line === '' )
+                continue;
+            if ( $line[0] === '@' && substr_count( $line, '|' ) >= 2 )
+            {
+                list( $time, $name, $mail ) = explode( '|', substr( $line, 1 ), 3 );
+                $person = isset( $map[strtolower( $mail )] ) ? $map[strtolower( $mail )] : ( isset( $map[strtolower( $name )] ) ? $map[strtolower( $name )] : $name );
+                $commit = in_array( strtolower( $mail ), $skip, true ) || in_array( strtolower( $name ), $skip, true ) ? null : array( trim( $person ), (int)$time );
+                continue;
+            }
+            if ( !$commit )
+                continue;
+            // newest first: the first commit seen is the last change, the last one seen the first
+            if ( !isset( $this->gitAuthors[$line] ) )
+                $this->gitAuthors[$line] = array( 'last' => $commit, 'first' => $commit, 'names' => array() );
+            $this->gitAuthors[$line]['first'] = $commit;
+            if ( !in_array( $commit[0], $this->gitAuthors[$line]['names'], true ) )
+                $this->gitAuthors[$line]['names'][] = $commit[0];
+        }
+        pclose( $handle );
+        return $this->gitAuthors;
+    }
+
     /** @var string the source folder of the last discover() */
     protected $sourceDir = '';
 
@@ -645,6 +712,17 @@ abstract class expStaticImportHtmlType implements expStaticImportTypeInterface
         // the byline (who wrote and updated the page) leaves the body for fields of its own
         $byline = new expStaticImportByline( $this->rules );
         $bylines = $byline->extract( $doc, $body );
+        // the people of the page's git history (GitAuthors): writer and updater where the source names none, and
+        // every author a contributor (the list field git_authors)
+        $git = $this->gitAuthors();
+        if ( isset( $git[$path] ) )
+        {
+            if ( empty( $bylines['fields']['written']['name'] ) )
+                $bylines['fields']['written'] = array( 'name' => $git[$path]['first'][0], 'time' => $git[$path]['first'][1] );
+            if ( empty( $bylines['fields']['updated']['name'] ) )
+                $bylines['fields']['updated'] = array( 'name' => $git[$path]['last'][0], 'time' => $git[$path]['last'][1] );
+            $bylines['fields']['git_authors'] = array( 'names' => $git[$path]['names'] );
+        }
         if ( isset( $bylines['fields']['written']['name'] ) )
             $meta['author'] = $bylines['fields']['written']['name'];
         if ( !empty( $bylines['fields']['updated']['time'] ) )

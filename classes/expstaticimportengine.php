@@ -99,6 +99,8 @@ class expStaticImportEngine
         $this->state = new expStaticImportState( $this->workDir . '/state.json' );
         if ( method_exists( $this->type, 'setWorkDir' ) )
             $this->type->setWorkDir( $this->workDir );
+        if ( method_exists( $this->type, 'setHistoryDir' ) )
+            $this->type->setHistoryDir( $this->workDir . '/history.git' );
     }
 
     /**
@@ -1864,6 +1866,21 @@ class expStaticImportEngine
             exec( 'git -C ' . escapeshellarg( $dir ) . ' pull --ff-only 2>&1', $output, $code );
             if ( $code !== 0 )
                 $this->report['warnings'][] = 'git pull failed, the import uses the copy it has: ' . implode( ' ', array_slice( $output, -2 ) );
+        }
+        // GitAuthors=enabled: the history of the repository (who changed which page, and when), kept as a bare clone
+        // without file contents (history.git in the work folder), cloned once and fetched with every pull
+        if ( $this->rules->enabled( 'GitAuthors', false ) )
+        {
+            $history = $this->workDir . '/history.git';
+            if ( !is_dir( $history ) )
+            {
+                exec( 'git clone --quiet --bare --filter=blob:none ' . ( $branch !== '' ? '--branch ' . escapeshellarg( $branch ) . ' ' : '' )
+                      . escapeshellarg( $repository ) . ' ' . escapeshellarg( $history ) . ' 2>&1', $output, $code );
+                if ( $code !== 0 )
+                    $this->report['warnings'][] = 'the history clone failed, no authors from git: ' . implode( ' ', array_slice( $output, -2 ) );
+            }
+            else if ( $this->options['pull'] )
+                exec( 'git -C ' . escapeshellarg( $history ) . ' fetch --quiet --filter=blob:none origin ' . ( $branch !== '' ? escapeshellarg( $branch . ':' . $branch ) : '' ) . ' 2>&1', $output, $code );
         }
         return $dir;
     }
