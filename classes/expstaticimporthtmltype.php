@@ -889,6 +889,31 @@ abstract class expStaticImportHtmlType implements expStaticImportTypeInterface
     }
 
     /**
+     * The page a path is a copy of by name: CopyOfPaths[<path>]=<page> (the old front page of a mirror that the site's
+     * root replaces: doc_hidden.html of index.html), or FolderIndexCopies. Never read through parentPath(), so
+     * folderParent() can pass over such a copy.
+     *
+     * @param string $path
+     * @return string the page, '' for none
+     */
+    public function explicitCopyOf( $path )
+    {
+        $paths = $this->rules->getHash( 'CopyOfPaths' );
+        if ( isset( $paths[$path] ) && trim( (string)$paths[$path] ) !== '' && trim( (string)$paths[$path] ) !== $path )
+            return trim( (string)$paths[$path] );
+        return $this->folderIndexCopyOf( $path );
+    }
+
+    /**
+     * @param string $path
+     * @return bool whether the path is a copy by name (explicitCopyOf())
+     */
+    protected function isExplicitCopy( $path )
+    {
+        return $this->explicitCopyOf( $path ) !== '';
+    }
+
+    /**
      * Every <dir>.html and <dir>/index.html of the source, with whether their visible text is the same (a report).
      *
      * @param array $paths the discovered paths
@@ -921,8 +946,8 @@ abstract class expStaticImportHtmlType implements expStaticImportTypeInterface
      */
     public function copyOf( $path )
     {
-        // FolderIndexCopies=enabled: <dir>/index.html with the same visible text as <dir>.html is that page
-        if ( ( $page = $this->folderIndexCopyOf( $path ) ) !== '' )
+        // CopyOfPaths[<path>]=<page>, FolderIndexCopies=enabled (<dir>/index.html with the visible text of <dir>.html)
+        if ( ( $page = $this->explicitCopyOf( $path ) ) !== '' )
             return $page;
         foreach ( $this->rules->getList( 'CopyOfPatterns' ) as $pattern )
         {
@@ -1306,7 +1331,8 @@ abstract class expStaticImportHtmlType implements expStaticImportTypeInterface
                 $candidates[] = $dir . '/' . $index;
             $candidates[] = $dir . '/';
             foreach ( $candidates as $candidate )
-                if ( $candidate !== $path && isset( $this->known[$candidate] ) )
+                // a page that is a copy of another (CopyOfPaths[], FolderIndexCopies) is no parent: the next candidate is
+                if ( $candidate !== $path && isset( $this->known[$candidate] ) && !$this->isExplicitCopy( $candidate ) )
                     return $candidate;
             $dir = dirname( $dir );
         }

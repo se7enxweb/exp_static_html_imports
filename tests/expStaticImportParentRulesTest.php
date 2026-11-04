@@ -165,4 +165,11 @@ class expStaticImportParentRulesTest extends \PHPUnit\Framework\TestCase
         list( $off ) = $this->type( array(), 'index-copies' );
         $this->assertSame( '', $off->copyOf( 'Guide/index.html' ) );
     }
+
+    public function testCopyOfPathsNamesACopy()
+    {
+        list( $type ) = $this->type( array( 'CopyOfPaths' => array( 'Other.html' => 'Guide.html' ),
+                                                                            ), 'index-copies' );
+        $this->assertSame( 'Guide.html', $type->copyOf( 'Other.html' ) );
+    }
 }

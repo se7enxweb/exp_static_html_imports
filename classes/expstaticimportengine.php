@@ -421,7 +421,8 @@ class expStaticImportEngine
     protected function resolveParentNode( $parentPath, array $containerNodes = array() )
     {
         $parentPath = (string)$parentPath;
-        if ( $parentPath === '' )
+        // the top, and the page whose content is the top node's own (RootPage)
+        if ( $parentPath === '' || $this->isRootPage( $parentPath ) )
             return $this->parentNode();
         if ( $parentPath[0] === '@' )
         {
@@ -459,7 +460,7 @@ class expStaticImportEngine
      */
     public function applyRoutes( $dryRun = false, $all = false, array $options = array() )
     {
-        $options += array( 'batch' => 0, 'resume' => false, 'limit' => 0, 'trash_merged' => false );
+        $options += array( 'batch' => 0, 'resume' => false, 'limit' => 0, 'trash_merged' => false, 'paths' => array() );
         $this->options['pull'] = false;
         $this->options['dry_run'] = (bool)$dryRun;
         $this->report = array( 'counts' => array(), 'warnings' => array() );
@@ -502,6 +503,29 @@ class expStaticImportEngine
                     $items[$path] = null;
             }
         $retiredNode = $this->retiredNode( $containerNodes, $user, $out );
+        // only the pages of these shell patterns (--path), the containers and the top's own page always
+        if ( !empty( $options['paths'] ) )
+            foreach ( array_keys( $items ) as $path )
+                if ( !expStaticImportHtmlType::matchesAny( (string)$path, (array)$options['paths'] ) )
+                    unset( $items[$path] );
+        // the page whose content is the top node's own (RootPage): a node an earlier run made for it is merged into
+        // the top node, and the state then knows the top node as that page's
+        $rootPage = trim( (string)$this->rules->get( 'RootPage', '' ) );
+        $rootEntry = $rootPage !== '' ? $this->state->page( $rootPage ) : null;
+        if ( $all && $rootEntry && !empty( $rootEntry['node_id'] ) && (int)$rootEntry['node_id'] !== (int)$root )
+        {
+            $copyNode = eZContentObjectTreeNode::fetch( (int)$rootEntry['node_id'] );
+            $rootNode = eZContentObjectTreeNode::fetch( (int)$root );
+            if ( $copyNode instanceof eZContentObjectTreeNode && $rootNode instanceof eZContentObjectTreeNode )
+            {
+                $rootPatch = array();
+                $this->mergeCopy( $rootPage, '', $copyNode->object(), $copyNode, $rootNode, $rootPatch, $out );
+                // the top's own page stays a page of the state, with the top node
+                $patchRoot = array( $rootPage => array( 'node_id' => (int)$root, 'object_id' => (int)$rootNode->attribute( 'contentobject_id' ), 'status' => 'unchanged', 'duplicate_of' => '' ) );
+                if ( !$dryRun )
+                    $this->writeStatePatch( $patchRoot, 'route-root-page' );
+            }
+        }
         $keys = array_map( 'strval', array_keys( $items ) );
         $out['items'] = count( $keys );
         $cursorFile = $this->workDir . '/route-cursor.json';
@@ -863,12 +887,24 @@ class expStaticImportEngine
                 $out['merge_children_kept_with_copy'] = ( isset( $out['merge_children_kept_with_copy'] ) ? $out['merge_children_kept_with_copy'] : 0 ) + 1;
                 continue;
             }
-            $out['merge_children_moved'] = ( isset( $out['merge_children_moved'] ) ? $out['merge_children_moved'] : 0 ) + 1;
+            // a page of the import goes where the rules put it today (never onto the top as clutter when the copy is
+            // the top's own page); a child of the copy alone (its comments) goes to the page
             $childObject = $child->object();
-            $name = $this->uniqueSiblingName( (int)$keepNode->attribute( 'node_id' ), (string)$childObject->attribute( 'name' ), (int)$childObject->attribute( 'id' ), array( 'path' => $path, 'meta' => array() ) );
+            $target = (int)$keepNode->attribute( 'node_id' );
+            $childMap = $childObject->dataMap();
+            $childSource = isset( $childMap['source_path'] ) ? trim( (string)$childMap['source_path']->toString() ) : '';
+            if ( $childSource !== '' && strpos( $childSource, '#' ) === false && $childSource !== $path )
+            {
+                $ruled = $this->resolveParentNode( $this->type->parentPath( $childSource ) );
+                if ( $ruled > 0 && $ruled !== (int)$node->attribute( 'node_id' ) )
+                    $target = $ruled;
+            }
+            $out['merge_children_moved'] = ( isset( $out['merge_children_moved'] ) ? $out['merge_children_moved'] : 0 ) + 1;
+            $this->tally( $out, 'merge_children_by', $path, $childSource . ' -> node ' . $target );
+            $name = $this->uniqueSiblingName( $target, (string)$childObject->attribute( 'name' ), (int)$childObject->attribute( 'id' ), array( 'path' => $path, 'meta' => array() ) );
             if ( $dryRun )
                 continue;
-            eZContentObjectTreeNodeOperations::move( (int)$child->attribute( 'node_id' ), (int)$keepNode->attribute( 'node_id' ) );
+            eZContentObjectTreeNodeOperations::move( (int)$child->attribute( 'node_id' ), $target );
             if ( $name !== null && $name !== (string)$childObject->attribute( 'name' ) )
                 $this->renameObject( $childObject, $name );
         }

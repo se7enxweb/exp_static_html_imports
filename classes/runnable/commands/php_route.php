@@ -30,16 +30,18 @@ class Route extends \Exponential\Runnable\Command
                 . "  --batch=<n>      a progress line and a cursor (var/<site>/static-import/<label>/route-cursor.json) every n pages\n"
                 . "  --resume         continue from the cursor of an interrupted step\n"
                 . "  --limit=<n>      stop after n pages (continue with --resume)\n"
+                . "  --path=<pattern> only the pages of these shell patterns (repeat or comma list); the containers always\n"
                 . "  --trash-merged   a copy merged into the page it copies (CopyOfPatterns[], FolderIndexCopies) goes to the\n"
                 . "                   trash once nothing refers to it, and its addresses redirect to the page (else it is hidden)\n"
                 . "  --dry-run        count, change nothing\n"
                 . "  --format=json    as JSON",
             'use-session' => false, 'use-modules' => true, 'use-extensions' => true
         ) );
-        $options = $this->startup( '[type:][dry-run][all][batch:][resume][limit:][trash-merged][format:]', '',
+        $options = $this->startup( '[type:][dry-run][all][batch:][resume][limit:][trash-merged][path:*][format:]', '',
                                    array( 'type' => 'The import type', 'dry-run' => 'Change nothing', 'all' => 'Every page where the rules put it',
                                           'batch' => 'Pages per batch', 'resume' => 'Continue from the cursor', 'limit' => 'Stop after this many pages',
                                           'trash-merged' => 'Trash the merged copies',
+                                          'path' => 'Shell patterns of the pages',
                                           'format' => 'text or json' ) );
         $type = !empty( $options['type'] ) ? ltrim( (string)$options['type'], '-' ) : '';
         if ( $type === '' )
@@ -65,7 +67,8 @@ class Route extends \Exponential\Runnable\Command
         $engine = new \expStaticImportEngine( $type, array( 'pull' => false ), $progress );
         $result = $engine->applyRoutes( !empty( $options['dry-run'] ), !empty( $options['all'] ),
                                         array( 'batch' => isset( $options['batch'] ) ? (int)$options['batch'] : 0, 'resume' => !empty( $options['resume'] ),
-                                               'limit' => isset( $options['limit'] ) ? (int)$options['limit'] : 0, 'trash_merged' => !empty( $options['trash-merged'] ) ) );
+                                               'limit' => isset( $options['limit'] ) ? (int)$options['limit'] : 0, 'trash_merged' => !empty( $options['trash-merged'] ),
+                                               'paths' => isset( $options['path'] ) ? array_filter( array_map( 'trim', explode( ',', implode( ',', (array)$options['path'] ) ) ) ) : array() ) );
         if ( $json )
             $this->output( json_encode( array( 'schema' => \expStaticImportEngine::SCHEMA, 'ok' => true, 'type' => $type ) + $result, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE ) );
         else
