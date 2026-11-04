@@ -23,7 +23,7 @@ require __DIR__ . '/sandbox.php';
 
 $base = rtrim( getenv( 'EXP_CRAWL_BASE' ) ?: 'https://doc.exponential.earth/doc/', '/' ) . '/';
 $urls = array_values( array_filter( array_map( 'trim', explode( ',', getenv( 'EXP_CRAWL_URLS' )
-        ?: 'site/exponential/technical-manual,site/frequently-asked-questions,site/tutorials,site/extensions,site/exponential/user-manual' ) ) ) );
+        ?: 'exponential/technical-manual,exponential/user-manual,platform,contributors,recent' ) ) ) );
 $mirror = expStaticImportEngine::workDir( $label ) . '/mirror';
 if ( is_dir( $mirror ) )
     // a fresh mirror, so every page is fetched: the old one is moved aside, never deleted
