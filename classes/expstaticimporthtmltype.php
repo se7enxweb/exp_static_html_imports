@@ -1,0 +1,373 @@
+<?php
+/**
+ * File containing the expStaticImportHtmlType class.
+ *
+ * @copyright Copyright (C) 1998 - 2026 Exponential Foundation and 7x. All rights reserved.
+ * @license GNU General Public License v2.0 (or any later version)
+ * @package exp_static_html_imports
+ */
+
+/**
+ * The common part of the HTML types (--html-generic, --doc-html): a folder of .html files whose folder structure is
+ * the page tree, read with selectors from the type's rules.
+ *
+ * Rules (statichtmlimport.ini [Type_<label>]):
+ *   Suffixes[]               the page files (default html, htm)
+ *   IncludePaths[]           shell patterns of the paths that are pages (empty: all)
+ *   ExcludePaths[]           shell patterns left out
+ *   HiddenPaths[]            shell patterns of pages imported hidden (reachable, not listed)
+ *   IndexFiles[]             the file that is a folder's own page (default index.html)
+ *   TitleSelector            the title (default h1); falls back to <title> without TitleSuffixPatterns[]
+ *   BodySelector             the body (default body)
+ *   OriginalSelector         the part kept as original HTML (default: the body selector)
+ *   MetaSelectors[<key>]     author, modified, labels (all matches), page_id
+ *   PageIdPatterns[]         regular expressions on the HTML that capture a page id
+ *   ClassRules[]             <shell pattern>;<class identifier>, the first match wins
+ *   DefaultClass             the class of every other page
+ *   AttributeMap[<class>/<attribute>]  title, short_title, body, original_html, source_path, page_id, author,
+ *                            modified, labels, description, keywords, import_hash (the page field that fills it)
+ *   AssetSuffixes[]          files that are media, not pages (png, jpg, gif, pdf, zip ...)
+ *   DuplicatePatterns[]      regular expressions on the path; a matching page is imported only when no page with the
+ *                            same content was imported under another path (it then becomes an alias of it)
+ */
+abstract class expStaticImportHtmlType implements expStaticImportTypeInterface
+{
+    /** @var expStaticImportRules */
+    protected $rules;
+
+    /** @var array path => true, the pages discover() found */
+    protected $known = array();
+
+    public function configure( expStaticImportRules $rules )
+    {
+        $this->rules = $rules;
+    }
+
+    /**
+     * @param array $paths the discovered paths, so map() can find a page's parent
+     */
+    public function setKnownPaths( array $paths )
+    {
+        $this->known = array_fill_keys( $paths, true );
+    }
+
+    public function discover( $source )
+    {
+        $suffixes = $this->rules->getList( 'Suffixes' ) ?: array( 'html', 'htm' );
+        $include = $this->rules->getList( 'IncludePaths' );
+        $exclude = $this->rules->getList( 'ExcludePaths' );
+        $paths = array();
+        $source = rtrim( $source, '/' );
+        $iterator = new RecursiveIteratorIterator(
+            new RecursiveCallbackFilterIterator(
+                new RecursiveDirectoryIterator( $source, FilesystemIterator::SKIP_DOTS | FilesystemIterator::UNIX_PATHS ),
+                function ( $file ) { return $file->getFilename()[0] !== '.'; }
+            )
+        );
+        foreach ( $iterator as $file )
+        {
+            if ( !$file->isFile() || !in_array( strtolower( $file->getExtension() ), $suffixes, true ) )
+                continue;
+            $path = substr( $file->getPathname(), strlen( $source ) + 1 );
+            if ( $include && !self::matchesAny( $path, $include ) )
+                continue;
+            if ( $exclude && self::matchesAny( $path, $exclude ) )
+                continue;
+            $paths[] = $path;
+        }
+        usort( $paths, function ( $a, $b ) {
+            $depth = substr_count( $a, '/' ) - substr_count( $b, '/' );
+            return $depth !== 0 ? $depth : strcmp( $a, $b );
+        } );
+        return $paths;
+    }
+
+    public function parse( $source, $path )
+    {
+        $file = rtrim( $source, '/' ) . '/' . $path;
+        $html = @file_get_contents( $file );
+        if ( $html === false )
+            throw new expStaticImportPageException( "cannot read $path" );
+        $doc = expStaticImportDom::load( $html );
+        $bodySelector = (string)$this->rules->get( 'BodySelector', 'body' );
+        $body = expStaticImportDom::first( $doc, $bodySelector );
+        if ( !$body instanceof DOMElement )
+            throw new expStaticImportPageException( "no body ($bodySelector) in $path" );
+
+        $title = '';
+        $titleNode = expStaticImportDom::first( $doc, (string)$this->rules->get( 'TitleSelector', 'h1' ), $body );
+        if ( $titleNode )
+        {
+            $title = expStaticImportDom::text( $titleNode );
+            if ( $this->rules->enabled( 'RemoveTitleFromBody', true ) && $titleNode->parentNode )
+            {
+                // the heading's wrapper (e.g. div.attribute-heading) goes with it when it holds nothing else
+                $wrapper = $titleNode->parentNode;
+                $wrapper->removeChild( $titleNode );
+                if ( $wrapper !== $body && trim( $wrapper->textContent ) === '' && $wrapper->parentNode )
+                    $wrapper->parentNode->removeChild( $wrapper );
+            }
+        }
+        if ( $title === '' )
+        {
+            $titleTag = $doc->getElementsByTagName( 'title' )->item( 0 );
+            $title = $titleTag ? expStaticImportDom::text( $titleTag ) : '';
+            foreach ( $this->rules->getList( 'TitleSuffixPatterns' ) as $pattern )
+                $title = trim( (string)@preg_replace( $pattern, '', $title ) );
+        }
+        if ( $title === '' )
+            $title = ucfirst( str_replace( array( '-', '_' ), ' ', pathinfo( $path, PATHINFO_FILENAME ) ) );
+
+        $meta = array( 'labels' => array() );
+        foreach ( $this->rules->getHash( 'MetaSelectors' ) as $key => $selector )
+        {
+            if ( $key === 'labels' )
+            {
+                foreach ( expStaticImportDom::query( $doc, $selector ) as $node )
+                    if ( ( $label = expStaticImportDom::text( $node ) ) !== '' )
+                        $meta['labels'][] = $label;
+                continue;
+            }
+            $node = expStaticImportDom::first( $doc, $selector );
+            if ( $node )
+                $meta[$key] = expStaticImportDom::text( $node );
+        }
+        foreach ( $this->rules->getList( 'PageIdPatterns' ) as $pattern )
+            if ( @preg_match( $pattern, $html, $m ) && isset( $m[1] ) )
+            {
+                $meta['page_id'] = $m[1];
+                break;
+            }
+        foreach ( array( 'description', 'keywords' ) as $name )
+        {
+            $xpath = new DOMXPath( $doc );
+            $node = $xpath->query( "//meta[@name='$name']" )->item( 0 );
+            if ( $node && trim( $node->getAttribute( 'content' ) ) !== '' )
+                $meta[$name] = trim( $node->getAttribute( 'content' ) );
+        }
+        if ( isset( $meta['keywords'] ) )
+            $meta['keywords'] = array_values( array_filter( array_map( 'trim', explode( ',', $meta['keywords'] ) ) ) );
+        if ( isset( $meta['modified'] ) && !ctype_digit( (string)$meta['modified'] ) )
+        {
+            $time = strtotime( preg_replace( '/^.*?(\d)/', '$1', (string)$meta['modified'] ) );
+            $meta['modified'] = $time ? $time : null;
+        }
+        if ( empty( $meta['modified'] ) )
+            $meta['modified'] = (int)@filemtime( $file );
+
+        $originalSelector = (string)$this->rules->get( 'OriginalSelector', '' );
+        $originalNode = $originalSelector !== '' ? expStaticImportDom::first( $doc, $originalSelector ) : $body;
+        $original = $originalNode ? expStaticImportDom::innerHtml( $originalNode ) : '';
+
+        $cleaner = new expStaticImportHtmlCleaner( $this->rules );
+        $bodyHtml = $cleaner->clean( $doc, $body );
+
+        if ( !isset( $meta['description'] ) )
+        {
+            $first = expStaticImportDom::first( $doc, 'p', $body );
+            if ( $first && ( $text = expStaticImportDom::text( $first ) ) !== '' )
+                $meta['description'] = mb_substr( $text, 0, 300 );
+        }
+
+        return array(
+            'path' => $path,
+            'title' => $title,
+            'body_html' => $bodyHtml,
+            'original_html' => trim( $original ),
+            'meta' => $meta,
+            'hidden' => self::matchesAny( $path, $this->rules->getList( 'HiddenPaths' ) ),
+            'aliases' => array(),
+            'duplicate_candidate' => $this->isDuplicateCandidate( $path ),
+        );
+    }
+
+    public function map( array $page )
+    {
+        $class = (string)$this->rules->get( 'DefaultClass', 'folder' );
+        foreach ( $this->rules->getList( 'ClassRules' ) as $rule )
+        {
+            if ( strpos( $rule, ';' ) === false )
+                continue;
+            list( $pattern, $identifier ) = array_map( 'trim', explode( ';', $rule, 2 ) );
+            if ( self::matches( $page['path'], $pattern ) )
+            {
+                $class = $identifier;
+                break;
+            }
+        }
+        $page['class'] = $class;
+        $page['parent_path'] = $this->parentPath( $page['path'] );
+        $page['priority'] = isset( $page['priority'] ) ? (int)$page['priority'] : 0;
+
+        $fields = $this->fields( $page );
+        $attributes = array();
+        foreach ( $this->rules->getHash( 'AttributeMap' ) as $key => $field )
+        {
+            if ( strpos( $key, '/' ) === false )
+                continue;
+            list( $mapClass, $attribute ) = explode( '/', $key, 2 );
+            if ( $mapClass !== $class && $mapClass !== '*' )
+                continue;
+            if ( isset( $fields[$field] ) )
+                $attributes[$attribute] = $fields[$field];
+        }
+        $page['attributes'] = $attributes;
+        return $page;
+    }
+
+    /**
+     * The values a page offers to AttributeMap[]. body is filled by the engine (the XML), the others here.
+     *
+     * @param array $page
+     * @return array
+     */
+    protected function fields( array $page )
+    {
+        $meta = isset( $page['meta'] ) ? $page['meta'] : array();
+        return array(
+            'title' => $page['title'],
+            'short_title' => mb_strlen( $page['title'] ) > 60 ? mb_substr( $page['title'], 0, 57 ) . '...' : $page['title'],
+            'body' => '{body}',
+            'original_html' => isset( $page['original_html'] ) ? $page['original_html'] : '',
+            'source_path' => $page['path'],
+            'page_id' => isset( $meta['page_id'] ) ? (string)$meta['page_id'] : '',
+            'author' => isset( $meta['author'] ) ? (string)$meta['author'] : '',
+            'modified' => isset( $meta['modified'] ) ? (string)(int)$meta['modified'] : '',
+            'labels' => isset( $meta['labels'] ) ? implode( ', ', $meta['labels'] ) : '',
+            'description' => isset( $meta['description'] ) ? (string)$meta['description'] : '',
+            'keywords' => isset( $meta['keywords'] ) ? implode( ', ', (array)$meta['keywords'] ) : '',
+            'import_hash' => '{hash}',
+            'labels_tags' => self::tagsString( isset( $meta['labels'] ) ? (array)$meta['labels'] : array(), (string)$this->rules->get( 'TagParent', '0' ),
+                                               (string)$this->rules->get( 'Language', 'eng-US' ) ),
+            'metadata_xml' => self::metadataXml( $page['title'], isset( $meta['keywords'] ) ? (array)$meta['keywords'] : array(),
+                                                 isset( $meta['description'] ) ? (string)$meta['description'] : '' ),
+        );
+    }
+
+    /**
+     * The labels as the eztags datatype's fromString() takes them: ids, keywords, parents and locales, each list
+     * joined by "|#" and the four lists joined by "|#" too. New tags have the id 0 and go below $parent.
+     *
+     * @param array $labels
+     * @param string $parent
+     * @param string $locale
+     * @return string
+     */
+    public static function tagsString( array $labels, $parent, $locale )
+    {
+        $labels = array_values( array_unique( array_filter( array_map( function ( $label ) {
+            return trim( str_replace( array( '|#', ',' ), ' ', (string)$label ) );
+        }, $labels ) ) ) );
+        if ( !$labels )
+            return '';
+        $count = count( $labels );
+        return implode( '|#', array_merge( array_fill( 0, $count, '0' ), $labels, array_fill( 0, $count, (string)$parent ), array_fill( 0, $count, (string)$locale ) ) );
+    }
+
+    /**
+     * The page's metadata as the xrowmetadata datatype stores it.
+     *
+     * @param string $title
+     * @param array $keywords
+     * @param string $description
+     * @return string
+     */
+    public static function metadataXml( $title, array $keywords, $description )
+    {
+        $e = function ( $text ) { return htmlspecialchars( (string)$text, ENT_QUOTES | ENT_XML1, 'UTF-8' ); };
+        return '<?xml version="1.0" encoding="utf-8"?>' . "\n" . '<MetaData><title>' . $e( $title ) . '</title><keywords>' . $e( implode( ',', $keywords ) )
+            . '</keywords><description>' . $e( $description ) . '</description><priority></priority><change></change><sitemap_use>1</sitemap_use></MetaData>';
+    }
+
+    /**
+     * The parent of a page: the nearest ancestor folder's own page (<folder>.html next to the folder, or its index
+     * file), '' at the top.
+     *
+     * @param string $path
+     * @return string
+     */
+    public function parentPath( $path )
+    {
+        $indexFiles = $this->rules->getList( 'IndexFiles' ) ?: array( 'index.html' );
+        $dir = dirname( $path );
+        if ( in_array( basename( $path ), $indexFiles, true ) )
+            $dir = dirname( $dir );
+        while ( $dir !== '.' && $dir !== '' && $dir !== '/' )
+        {
+            foreach ( array_merge( array( $dir . '.html' ), array_map( function ( $index ) use ( $dir ) { return $dir . '/' . $index; }, $indexFiles ) ) as $candidate )
+                if ( $candidate !== $path && isset( $this->known[$candidate] ) )
+                    return $candidate;
+            $dir = dirname( $dir );
+        }
+        return '';
+    }
+
+    public function assets( array $page )
+    {
+        $suffixes = $this->rules->getList( 'AssetSuffixes' ) ?: array( 'png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'pdf', 'zip' );
+        $assets = array();
+        if ( !preg_match_all( '/\b(?:src|href)=["\']([^"\']+)["\']/i', $page['body_html'], $m ) )
+            return array();
+        foreach ( $m[1] as $href )
+        {
+            $target = expStaticImportDom::resolve( $page['path'], $href );
+            if ( $target !== null && in_array( strtolower( pathinfo( $target, PATHINFO_EXTENSION ) ), $suffixes, true ) )
+                $assets[$target] = true;
+        }
+        return array_keys( $assets );
+    }
+
+    public function links( array $page )
+    {
+        $links = array();
+        if ( !preg_match_all( '/<a\b[^>]*\bhref=["\']([^"\']+)["\']/i', $page['body_html'], $m ) )
+            return array();
+        foreach ( $m[1] as $href )
+        {
+            $target = expStaticImportDom::resolve( $page['path'], $href );
+            if ( $target !== null && preg_match( '/\.html?$/i', $target ) )
+                $links[$href] = $target;
+        }
+        return $links;
+    }
+
+    /**
+     * @param string $path
+     * @return bool
+     */
+    protected function isDuplicateCandidate( $path )
+    {
+        foreach ( $this->rules->getList( 'DuplicatePatterns' ) as $pattern )
+            if ( @preg_match( $pattern, $path ) )
+                return true;
+        return false;
+    }
+
+    /**
+     * @param string $path
+     * @param string $pattern a shell pattern; ** matches across folders
+     * @return bool
+     */
+    public static function matches( $path, $pattern )
+    {
+        if ( strpos( $pattern, '**' ) !== false )
+        {
+            $regex = '#^' . str_replace( array( '\*\*', '\*', '\?' ), array( '.*', '[^/]*', '[^/]' ), preg_quote( $pattern, '#' ) ) . '$#';
+            return (bool)preg_match( $regex, $path );
+        }
+        return fnmatch( $pattern, $path, FNM_PATHNAME );
+    }
+
+    /**
+     * @param string $path
+     * @param array $patterns
+     * @return bool
+     */
+    public static function matchesAny( $path, array $patterns )
+    {
+        foreach ( $patterns as $pattern )
+            if ( self::matches( $path, $pattern ) )
+                return true;
+        return false;
+    }
+}

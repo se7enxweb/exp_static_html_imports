@@ -1,0 +1,21 @@
+{
+    "name": "se7enxweb/exp_static_html_imports",
+    "description": "Exponential Static Site Import: import a static site (HTML files, Markdown or a crawled site) into the content tree by content classes, and keep it in step with its source. Types are pluggable (--doc-html, --html-generic, --markdown, --sitemap-crawl).",
+    "type": "ezpublish-legacy-extension",
+    "keywords": ["Exponential", "Exponential Legacy", "import", "static site", "html", "markdown", "migration"],
+    "homepage": "https://se7enx.com",
+    "license": "GPL-2.0-or-later",
+    "require": {
+        "php": ">=7.4"
+    },
+    "extra": {
+        "ezpublish-legacy-extension-name": "exp_static_html_imports"
+    },
+    "authors": [
+        { "name": "7x", "homepage": "https://se7enx.com" }
+    ],
+    "support": {
+        "issues": "https://github.com/se7enxweb/exp_static_html_imports/issues",
+        "source": "https://github.com/se7enxweb/exp_static_html_imports"
+    }
+}
