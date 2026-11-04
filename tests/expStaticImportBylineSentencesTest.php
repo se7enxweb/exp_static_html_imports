@@ -33,6 +33,7 @@ class expStaticImportBylineSentencesTest extends \PHPUnit\Framework\TestCase
             'TitleSelector' => '#title-text, h1',
             'BodySelector' => '#main-content, body',
             'DefaultClass' => 'exp_doc_page',
+            'ConfluenceCommentsSelector' => '#page-comments', 'CommentClass' => 'comment_historical',
             'AttributeMap' => array( '*/title' => 'title', '*/written_by' => 'written_by', '*/written_at' => 'written_at',
                                      '*/last_updated_by' => 'last_updated_by', '*/last_updated_at' => 'last_updated_at',
                                      '*/contributors' => 'contributors' ),
@@ -96,5 +97,26 @@ class expStaticImportBylineSentencesTest extends \PHPUnit\Framework\TestCase
         $page = $this->type->parse( $this->source, 'display/SPC/Byline-odd.html' );
         $this->assertSame( array( 'Edited somehow by Ann Writer at teatime' ), $page['byline_failures'] );
         $this->assertArrayNotHasKey( 'written', $page['bylines'] );
+    }
+
+    public function testConfluenceCommentsAndRepliesAreKeptWithAllTheirData()
+    {
+        $page = $this->type->parse( $this->source, 'display/SPC/Commented.html' );
+        $this->assertCount( 1, $page['children'] );
+        $comment = $this->type->map( $page['children'][0] );
+        $this->assertSame( 'display/SPC/Commented.html#comment501', $comment['path'] );
+        $this->assertSame( 'comment_historical', $comment['class'] );
+        $this->assertSame( 'display/SPC/Commented.html', $comment['parent_path'] );
+        $this->assertSame( 'Dee Reader', $comment['meta']['author'] );
+        $this->assertSame( $this->time( 'Jan 16, 2017 16:15' ), $comment['meta']['modified'] );
+        $this->assertStringContainsString( 'First remark.', $comment['body_html'] );
+        // the original markup is the comment's own, without its replies
+        $this->assertStringContainsString( 'id="comment-501"', $comment['original_html'] );
+        $this->assertStringNotContainsString( 'A reply.', $comment['original_html'] );
+        $this->assertSame( '{contributor:written}', $comment['attributes']['written_by'] );
+        $reply = $this->type->map( $comment['children'][0] );
+        $this->assertSame( 'display/SPC/Commented.html#comment501', $reply['parent_path'] );
+        $this->assertSame( '501', $reply['meta']['parent_comment_id'] );
+        $this->assertSame( 'Eve Answer', $reply['meta']['author'] );
     }
 }

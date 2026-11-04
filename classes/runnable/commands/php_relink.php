@@ -22,12 +22,13 @@ class Relink extends \Exponential\Runnable\Command
                 . "on. Lists the targets still unresolved, the most frequent first.\n\n"
                 . "  --type=<label>     the import type (e.g. doc-html)\n"
                 . "  --path=<pattern>   only these source paths (shell pattern, may be repeated)\n"
+                . "  --comments         every page whose source holds comments (CommentMarkers[]), its comments written again\n"
                 . "  --dry-run          count, change nothing\n"
                 . "  --format=json      as JSON",
             'use-session' => false, 'use-modules' => true, 'use-extensions' => true
         ) );
-        $options = $this->startup( '[type:][path:*][dry-run][format:]', '', array( 'type' => 'The import type', 'path' => 'Only these paths',
-                                    'dry-run' => 'Change nothing', 'format' => 'text or json' ) );
+        $options = $this->startup( '[type:][path:*][dry-run][comments][format:]', '', array( 'type' => 'The import type', 'path' => 'Only these paths',
+                                    'dry-run' => 'Change nothing', 'comments' => 'Every page with comments', 'format' => 'text or json' ) );
         $type = !empty( $options['type'] ) ? ltrim( (string)$options['type'], '-' ) : '';
         if ( $type === '' )
         {
@@ -36,7 +37,8 @@ class Relink extends \Exponential\Runnable\Command
             return 2;
         }
         $engine = new \expStaticImportEngine( $type, array( 'pull' => false ) );
-        $result = $engine->relinkExisting( !empty( $options['path'] ) ? (array)$options['path'] : array(), !empty( $options['dry-run'] ) );
+        $result = $engine->relinkExisting( !empty( $options['path'] ) ? (array)$options['path'] : array(), !empty( $options['dry-run'] ),
+                                            !empty( $options['comments'] ) ? (array)\eZINI::instance( 'statichtmlimport.ini' )->variable( 'Type_' . $type, 'CommentMarkers' ) : array() );
         if ( isset( $options['format'] ) && $options['format'] === 'json' )
             $this->output( json_encode( array( 'schema' => \expStaticImportEngine::SCHEMA, 'ok' => true, 'type' => $type ) + $result, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE ) );
         else

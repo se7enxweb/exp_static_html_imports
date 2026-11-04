@@ -639,7 +639,7 @@ class expStaticImportEngine
      * @return array( 'pages' => checked, 'rewritten' => n, 'links' => resolved now, 'unresolved' => n, 'targets' => the
      *                unresolved targets by count )
      */
-    public function relinkExisting( array $patterns = array(), $dryRun = false )
+    public function relinkExisting( array $patterns = array(), $dryRun = false, array $markers = array() )
     {
         $this->options['pull'] = false;
         $this->report = array( 'counts' => array( 'created' => 0, 'updated' => 0, 'unchanged' => 0, 'flagged' => 0, 'failed' => 0, 'duplicates' => 0,
@@ -658,7 +658,7 @@ class expStaticImportEngine
         {
             $path = (string)$path;
             $entry = $this->state->page( $path );
-            if ( empty( $entry['object_id'] ) || empty( $entry['unresolved'] ) || strpos( $path, '#' ) !== false
+            if ( empty( $entry['object_id'] ) || ( empty( $entry['unresolved'] ) && !$markers ) || strpos( $path, '#' ) !== false
                  || ( isset( $entry['status'] ) && in_array( $entry['status'], array( 'removed', 'duplicate', 'failed', 'flagged' ), true ) ) )
                 continue;
             if ( $patterns && !expStaticImportHtmlType::matchesAny( $path, $patterns ) )
@@ -666,7 +666,17 @@ class expStaticImportEngine
             $out['pages']++;
             if ( ++$n % 50 === 0 )
                 eZContentObject::clearCache();
+            // with $markers: every page whose source holds one of them (e.g. its comments), whatever its links
             $resolvable = false;
+            if ( $markers )
+            {
+                $html = (string)@file_get_contents( $this->source . '/' . $path );
+                foreach ( $markers as $marker )
+                    if ( $marker !== '' && strpos( $html, $marker ) !== false )
+                        $resolvable = true;
+                if ( !$resolvable )
+                    continue;
+            }
             foreach ( (array)$entry['unresolved'] as $target )
                 if ( $this->state->nodeOf( $target ) || $this->state->asset( $target )
                      || ( strpos( (string)$target, 'page:' ) === 0 && $this->objectByPageId( substr( (string)$target, 5 ) ) ) )
@@ -699,7 +709,11 @@ class expStaticImportEngine
             {
                 $out['rewritten']++;
                 $patch[$path] = array_intersect_key( $after, array_flip( array( 'source_hash', 'written_hash', 'written_fields', 'unresolved', 'node_id', 'object_id' ) ) );
-                foreach ( (array)$after['unresolved'] as $target )
+                // the pages it carries (its comments) are written with it: their entries go with the patch
+                foreach ( $this->state->data['pages'] as $childPath => $childEntry )
+                    if ( strpos( (string)$childPath, $path . '#' ) === 0 )
+                        $patch[(string)$childPath] = $childEntry;
+                foreach ( isset( $after['unresolved'] ) ? (array)$after['unresolved'] : array() as $target )
                     $out['targets'][$target] = ( isset( $out['targets'][$target] ) ? $out['targets'][$target] : 0 ) + 1;
                 $out['unresolved'] += count( (array)$after['unresolved'] );
             }
@@ -708,6 +722,95 @@ class expStaticImportEngine
             $out['patch'] = $this->writeStatePatch( $patch, 'relink' );
         arsort( $out['targets'] );
         $out['targets'] = array_slice( $out['targets'], 0, 100, true );
+        return $out;
+    }
+
+    /**
+     * The no-data-loss audit of the comments (exp:static-import:comments): for every imported page, each comment of
+     * its source (the pages a type builds below a page, with their replies) must be an object of its class, below its
+     * page or the comment it answers, with the same original markup (sha1), its author and its date. Read-only.
+     *
+     * @param array $patterns shell patterns of the source paths (empty: all)
+     * @return array( 'pages' => pages with comments, 'comments' => n, 'stored' => n, 'missing' => n, 'by_page' => ... )
+     */
+    public function commentsAudit( array $patterns = array() )
+    {
+        $this->options['pull'] = false;
+        $this->source = $this->prepareSource();
+        $this->loadStatePatches();
+        $paths = $this->type->discover( $this->source );
+        if ( method_exists( $this->type, 'setKnownPaths' ) )
+            $this->type->setKnownPaths( $paths );
+        $map = $this->rules->getHash( 'AttributeMap' );
+        $out = array( 'pages' => 0, 'comments' => 0, 'stored' => 0, 'missing' => 0, 'by_page' => array() );
+        $n = 0;
+        foreach ( $this->state->data['pages'] as $path => $entry )
+        {
+            $path = (string)$path;
+            if ( empty( $entry['object_id'] ) || strpos( $path, '#' ) !== false || substr( $path, -1 ) === '/'
+                 || ( isset( $entry['status'] ) && in_array( $entry['status'], array( 'removed', 'duplicate', 'failed' ), true ) ) )
+                continue;
+            if ( $patterns && !expStaticImportHtmlType::matchesAny( $path, $patterns ) )
+                continue;
+            if ( ++$n % 50 === 0 )
+                eZContentObject::clearCache();
+            try
+            {
+                $page = $this->type->parse( $this->source, $path );
+            }
+            catch ( Throwable $e )
+            {
+                continue;
+            }
+            if ( !is_array( $page ) || empty( $page['children'] ) )
+                continue;
+            $out['pages']++;
+            $object = eZContentObject::fetch( (int)$entry['object_id'] );
+            $missing = array();
+            $walk = function ( array $comments, $parentNode ) use ( &$walk, &$missing, &$out, $map )
+            {
+                foreach ( $comments as $comment )
+                {
+                    $comment = $this->type->map( $comment );
+                    $out['comments']++;
+                    $stored = eZContentObject::fetchByRemoteID( self::remoteID( $this->label, $comment['path'] ) );
+                    $id = isset( $comment['meta']['comment_id'] ) ? $comment['meta']['comment_id'] : $comment['path'];
+                    if ( !$stored instanceof eZContentObject )
+                    {
+                        $missing[] = "comment $id: not imported";
+                        $walk( isset( $comment['children'] ) ? (array)$comment['children'] : array(), 0 );
+                        continue;
+                    }
+                    $out['stored']++;
+                    $node = $stored->attribute( 'main_node' );
+                    if ( (string)$stored->attribute( 'class_identifier' ) !== (string)$comment['class'] )
+                        $missing[] = "comment $id: class " . $stored->attribute( 'class_identifier' ) . ", not " . $comment['class'];
+                    if ( $parentNode && ( !$node || (int)$node->attribute( 'parent_node_id' ) !== (int)$parentNode ) )
+                        $missing[] = "comment $id: not below the page or the comment it answers";
+                    $dataMap = $stored->dataMap();
+                    foreach ( $map as $key => $field )
+                    {
+                        list( $mapClass, $identifier ) = array_pad( explode( '/', (string)$key, 2 ), 2, '' );
+                        if ( ( $mapClass !== '*' && $mapClass !== $comment['class'] ) || !isset( $dataMap[$identifier] ) )
+                            continue;
+                        $attribute = $dataMap[$identifier];
+                        if ( $field === 'original_html' && sha1( trim( (string)$attribute->attribute( 'data_text' ) ) ) !== sha1( trim( (string)$comment['original_html'] ) ) )
+                            $missing[] = "comment $id: the original text differs";
+                        if ( $field === 'written_by' && !empty( $comment['meta']['author'] ) && !(int)$attribute->attribute( 'data_int' ) )
+                            $missing[] = "comment $id: no author";
+                        if ( ( $field === 'written_at' || $field === 'modified' ) && !empty( $comment['meta']['modified'] ) && (int)$attribute->attribute( 'data_int' ) !== (int)$comment['meta']['modified'] )
+                            $missing[] = "comment $id: the date differs";
+                        if ( $field === 'parent_comment_id' && (string)$attribute->attribute( 'data_text' ) !== (string)$comment['meta']['parent_comment_id'] )
+                            $missing[] = "comment $id: the parent comment id differs";
+                    }
+                    $walk( isset( $comment['children'] ) ? (array)$comment['children'] : array(), $node ? (int)$node->attribute( 'node_id' ) : 0 );
+                }
+            };
+            $walk( (array)$page['children'], $object ? (int)$object->attribute( 'main_node_id' ) : 0 );
+            $out['missing'] += count( array_unique( $missing ) );
+            if ( $missing )
+                $out['by_page'][$path] = array_values( array_unique( $missing ) );
+        }
         return $out;
     }
 
@@ -1403,6 +1506,20 @@ class expStaticImportEngine
 
         $remoteID = self::remoteID( $this->label, $path );
         $object = eZContentObject::fetchByRemoteID( $remoteID );
+        // a page whose class changed in the rules (e.g. the comments of exp_doc_comment that are comment_historical
+        // now): the old object is hidden and gives up the remote id (ClassChange=replace, the default; keep leaves it)
+        if ( $object instanceof eZContentObject && !$this->isRootPage( $path ) && (string)$object->attribute( 'class_identifier' ) !== (string)$page['class']
+             && strtolower( (string)$this->rules->get( 'ClassChange', 'replace' ) ) === 'replace' && !$this->options['dry_run'] )
+        {
+            $node = $object->attribute( 'main_node' );
+            if ( $node instanceof eZContentObjectTreeNode && !(int)$node->attribute( 'is_hidden' ) )
+                eZContentObjectTreeNode::hideSubTree( $node );
+            $object->setAttribute( 'remote_id', $remoteID . '-was-' . $object->attribute( 'class_identifier' ) );
+            $object->store();
+            $this->report['counts']['replaced'] = ( isset( $this->report['counts']['replaced'] ) ? $this->report['counts']['replaced'] : 0 ) + 1;
+            $previous = null;
+            $object = null;
+        }
         // the spec check: no two pages with the same name below one parent (SiblingNames=unique renames the later
         // one with SiblingNameSuffix, refuse skips it, warn only reports it)
         $unique = $this->isRootPage( $path ) ? $page['title'] : $this->uniqueSiblingName( $parentNode, $page['title'], $object instanceof eZContentObject ? (int)$object->attribute( 'id' ) : 0, $page );

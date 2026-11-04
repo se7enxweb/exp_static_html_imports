@@ -185,20 +185,114 @@ class expStaticImportTypeDocHtml extends expStaticImportHtmlType
     protected function comments( $source, $path )
     {
         $selector = (string)$this->rules->get( 'CommentsSelector', '' );
+        $confluence = (string)$this->rules->get( 'ConfluenceCommentsSelector', '' );
         $class = (string)$this->rules->get( 'CommentClass', '' );
-        if ( $selector === '' || $class === '' )
+        if ( ( $selector === '' && $confluence === '' ) || $class === '' )
             return array();
         $html = (string)@file_get_contents( rtrim( $source, '/' ) . '/' . $path );
-        if ( strpos( $html, 'class-comment' ) === false )
+        $hasEzdoc = $selector !== '' && strpos( $html, 'class-comment' ) !== false;
+        $hasConfluence = $confluence !== '' && strpos( $html, 'comment-thread' ) !== false;
+        if ( !$hasEzdoc && !$hasConfluence )
             return array();
         $doc = expStaticImportDom::load( $html );
-        $root = expStaticImportDom::first( $doc, $selector );
+        // Confluence: <ol class="comment-threads"> of <li class="comment-thread">, the replies in an <ol> in the <li>
+        if ( $hasConfluence && ( $root = expStaticImportDom::first( $doc, $confluence ) ) )
+            return $this->confluenceCommentList( $doc, $root, $path, $path, $class );
+        $root = $hasEzdoc ? expStaticImportDom::first( $doc, $selector ) : null;
         if ( !$root )
             return array();
         foreach ( $root->childNodes as $child )
             if ( $child instanceof DOMElement && $child->nodeName === 'ul' )
                 return $this->commentList( $doc, $child, $path, $path, $class );
         return array();
+    }
+
+    /**
+     * A comment as a page: the fields every comment variant fills.
+     *
+     * @return array
+     */
+    protected function commentPage( $pagePath, $parentPath, $class, $id, $title, $author, $time, $text, $original, $position )
+    {
+        $commentPath = $pagePath . '#comment' . $id;
+        $parentID = $parentPath !== $pagePath && preg_match( '/#comment(\w+)$/', $parentPath, $p ) ? $p[1] : '';
+        return array(
+            'path' => $commentPath,
+            'title' => $title,
+            'body_html' => $text === '' ? '' : ( preg_match( '/^\s*<(p|ul|ol|div|pre|table|h\d)\b/i', $text ) ? $text : '<p>' . $text . '</p>' ),
+            'original_html' => $original,
+            'meta' => array( 'author' => $author, 'modified' => $time ?: null, 'labels' => array(), 'comment_id' => (string)$id,
+                             'parent_comment_id' => $parentID, 'source_url' => $commentPath ),
+            // the author and time are the comment's byline: a relation to the contributor, and its date
+            'bylines' => $author !== '' ? array( 'written' => array( 'name' => $author, 'time' => $time ?: null ) ) : array(),
+            'byline_failures' => array(),
+            'hidden' => false,
+            'aliases' => array(),
+            'class_fixed' => $class,
+            'parent_fixed' => $parentPath,
+            'priority' => $position,
+            'children' => array(),
+        );
+    }
+
+    /**
+     * @param string $text a date of a comment (the source's own format, a weekday in front or not)
+     * @return int|null in the source's timezone (BylineTimezone)
+     */
+    protected function commentTime( $text )
+    {
+        $text = trim( preg_replace( '/^(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\s+/i', '', trim( $text ) ) );
+        if ( $text === '' )
+            return null;
+        $byline = new expStaticImportByline( $this->rules );
+        if ( ( $time = $byline->parseDate( $text ) ) !== null )
+            return $time;
+        try
+        {
+            $date = new DateTime( $text, new DateTimeZone( (string)$this->rules->get( 'BylineTimezone', 'UTC' ) ) );
+            return $date->getTimestamp();
+        }
+        catch ( Exception $e )
+        {
+            return null;
+        }
+    }
+
+    /**
+     * Confluence's comment threads, the replies below the comment they answer.
+     *
+     * @return array
+     */
+    protected function confluenceCommentList( DOMDocument $doc, DOMElement $list, $pagePath, $parentPath, $class )
+    {
+        $comments = array();
+        $position = 0;
+        foreach ( $list->childNodes as $li )
+        {
+            if ( !$li instanceof DOMElement || $li->nodeName !== 'li' )
+                continue;
+            $box = null;
+            foreach ( $li->childNodes as $child )
+                if ( $child instanceof DOMElement && strpos( ' ' . $child->getAttribute( 'class' ) . ' ', ' comment ' ) !== false )
+                    $box = $child;
+            if ( !$box )
+                continue;
+            $position++;
+            $id = preg_match( '/(\d+)/', $box->getAttribute( 'id' ), $m ) ? $m[1] : (string)$position;
+            $author = ( $a = expStaticImportDom::first( $doc, '.comment-header .author', $box ) ) ? expStaticImportDom::text( $a ) : '';
+            $content = expStaticImportDom::first( $doc, '.comment-content', $box );
+            $text = $content ? trim( expStaticImportDom::innerHtml( $content ) ) : '';
+            $dateNode = expStaticImportDom::first( $doc, '.comment-date a', $box );
+            $time = $dateNode ? ( $this->commentTime( $dateNode->getAttribute( 'title' ) ) ?: $this->commentTime( expStaticImportDom::text( $dateNode ) ) ) : null;
+            $label = $time ? date( 'Y-m-d H:i', $time ) : '';
+            $comment = $this->commentPage( $pagePath, $parentPath, $class, $id, trim( 'Comment by ' . ( $author !== '' ? $author : 'an unknown reader' ) . ( $label !== '' ? ', ' . $label : '' ) ),
+                                           $author, $time, $text, trim( $doc->saveHTML( $box ) ), $position );
+            foreach ( $li->childNodes as $child )
+                if ( $child instanceof DOMElement && $child->nodeName === 'ol' )
+                    $comment['children'] = array_merge( $comment['children'], $this->confluenceCommentList( $doc, $child, $pagePath, $comment['path'], $class ) );
+            $comments[] = $comment;
+        }
+        return $comments;
     }
 
     /**
@@ -225,21 +319,14 @@ class expStaticImportTypeDocHtml extends expStaticImportHtmlType
             $author = ( $a = expStaticImportDom::first( $doc, 'p.author', $li ) ) ? expStaticImportDom::text( $a ) : '';
             $textNode = expStaticImportDom::first( $doc, '.attribute-short', $li );
             $text = $textNode ? trim( expStaticImportDom::innerHtml( $textNode ) ) : '';
-            $commentPath = $pagePath . '#comment' . $id;
-            $time = $date !== '' ? strtotime( preg_replace( '/^[A-Za-z]+\s+/', '', $date ) ) : 0;
-            $comment = array(
-                'path' => $commentPath,
-                'title' => $title !== '' ? $title : 'Comment',
-                'body_html' => $text === '' ? '' : ( preg_match( '/^\s*<(p|ul|ol|div|pre)\b/i', $text ) ? $text : '<p>' . $text . '</p>' ),
-                'original_html' => $text,
-                'meta' => array( 'author' => $author, 'modified' => $time ?: null, 'labels' => array() ),
-                'hidden' => false,
-                'aliases' => array(),
-                'class_fixed' => $class,
-                'parent_fixed' => $parentPath,
-                'priority' => $position,
-                'children' => array(),
-            );
+            // the comment's own markup without its replies is kept as the original
+            $own = $li->cloneNode( true );
+            foreach ( iterator_to_array( $own->getElementsByTagName( 'ul' ) ) as $nested )
+                if ( $nested->parentNode === $own || ( $nested->parentNode && $nested->parentNode->parentNode === $own ) )
+                    $nested->parentNode->removeChild( $nested );
+            $comment = $this->commentPage( $pagePath, $parentPath, $class, $id, $title !== '' ? $title : 'Comment by ' . ( $author !== '' ? $author : 'an unknown reader' ),
+                                           $author, $date !== '' ? $this->commentTime( $date ) : null, $text, trim( $doc->saveHTML( $own ) ), $position );
+            $commentPath = $comment['path'];
             foreach ( $li->getElementsByTagName( 'ul' ) as $nested )
             {
                 // only the replies list of this <li>, not the lists inside the comment text
@@ -257,6 +344,10 @@ class expStaticImportTypeDocHtml extends expStaticImportHtmlType
     protected function fields( array $page )
     {
         $fields = parent::fields( $page );
+        // a comment's own fields: its id in the source, the id of the comment it answers, its address
+        foreach ( array( 'comment_id', 'parent_comment_id', 'source_url' ) as $key )
+            $fields[$key] = isset( $page['meta'][$key] ) ? (string)$page['meta'][$key] : '';
+        $fields['author_name'] = isset( $page['meta']['author'] ) ? (string)$page['meta']['author'] : '';
         $fields['version'] = isset( $page['meta']['version'] ) ? (string)$page['meta']['version'] : '';
         // VersionStatus[<shell pattern of the version>]=<status>: the first match wins (e.g. 6*=current, 3*=EOL)
         $fields['version_status'] = '';
