@@ -171,6 +171,30 @@ work folder). For the pages of `GitAuthorPaths[]` every author of a commit is a 
 nobody, the first author is the writer and the last the updater, with the dates of the commits. `GitAuthorMap[<e-mail
 or name>]=<name>` joins several identities into one person (only the name is shown), `GitAuthorSkip[]` leaves bots out.
 
+## Dates: when a page was first published and last changed
+
+Every object gets the real dates of its page, never the day of the import: the object's published and modified dates
+and its versions' created and modified dates, set when the import creates or updates it. `DateRules[]` is a chain,
+`<created|modified>;<source>[;<arguments>[;<label>[;<paths>]]]`; the first rule of a field that gives a date wins.
+
+| Source | Arguments | Gives |
+|---|---|---|
+| `attribute` | AttributeMap[] identifiers | the page's own values, such as the byline's `written_at` and `last_updated_at`, or a comment's date |
+| `git` | `first` or `last`, and `nobulk` | the commit that added the file, or the last one that changed it; `nobulk` leaves out commits of more than `DateGitBulkCommitFiles` files (default 1000: site-wide rewrites) |
+| `meta` | `<meta>` names | date tags by name, property, itemprop or http-equiv (ISO dates, Unix times in seconds or milliseconds) |
+| `mtime` | | the file time, never the time of the clone or later (`DateMtimeCloneWindow`, default 86400 seconds) |
+| `children` | | the earliest created and the latest modified date of the object's children (a section without a file) |
+
+The label names the source in the report (default: the source); the paths (shell patterns) limit a rule to some
+pages. A created date later than the modified date takes the modified date; a page with one date has it as both. The
+day of the run is used only when nothing gives a date, and the report counts it. The git index is built once from one
+`git log --name-only` over the whole history (`history.git`, cloned when a rule reads git), and
+`DateGitPathAliases[]=<regex>;<replacement>` names a path's earlier names, so a renamed folder keeps its first
+commit. Without `DateRules[]` the chain is git, the meta tags, then the file time.
+
+The dates are no attributes: the import hash does not see them, so the next run flags nothing. `exp:static-import:dates`
+brings the objects of earlier runs in step.
+
 ## Console steps beside a run
 
 They never write the state file (a running import would save over it): what the next run must know goes into a state
@@ -183,3 +207,4 @@ patch in `state-patches/` of the work folder, which that run merges first.
 | `exp:static-import:hide-non-pages --type=<label>` | hides imported pages that are no pages today (error pages, binary files, viewers, copies, excluded) |
 | `exp:static-import:bylines --type=<label> [--fill [--replace-roles]]` | the no-data-loss audit of the bylines, and the fill |
 | `exp:static-import:comments --type=<label> [--trash-replaced]` | the no-data-loss audit of the comments, and the removal of the objects they replaced |
+| `exp:static-import:dates --type=<label> [--dry-run] [--restart] [--index=queue\|now\|none]` | every imported object (pages, sections, comments, media) gets its real dates by `DateRules[]`, in resumable batches (`dates-state.json`); changed objects are queued for the search index and their view caches cleared |

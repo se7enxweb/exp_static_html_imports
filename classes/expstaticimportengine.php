@@ -80,6 +80,15 @@ class expStaticImportEngine
     /** @var array page path => array of href => target path, links still to turn into node links */
     protected $pendingLinks = array();
 
+    /** @var expStaticImportDates|null the date rule chain (DateRules[]) */
+    protected $datesChain = null;
+
+    /** @var string the source folder the date rule chain was made for */
+    protected $datesSource = null;
+
+    /** @var array object id => path, the objects of this run whose dates wait for their children */
+    protected $datesPending = array();
+
     /**
      * @param string $label the import type (doc-html, html-generic, markdown, sitemap-crawl)
      * @param array $options source, dry_run, apply_removals, batch, limit, paths (shell patterns), resume, restart,
@@ -238,6 +247,9 @@ class expStaticImportEngine
             }
         }
 
+        // the sections and containers of this run that have no dates of their own take their children's
+        if ( $this->datesPending && !$this->options['dry_run'] )
+            $this->report['counts']['dated_by_children'] = $this->datePendingContainers( $this->datesPending );
         $this->finishDeferredWork( $deferred );
         $this->report['seconds'] = round( microtime( true ) - $started, 1 );
         $this->report['finished'] = date( 'c' );
@@ -2090,6 +2102,15 @@ class expStaticImportEngine
                 $this->report['counts']['hidden']++;
             }
         }
+        // the page's real dates (DateRules[]), from the values the import just wrote, not the day of the import; a
+        // page with none of its own (a section) waits for its children, at the end of the run
+        $dates = $this->datesChain()->resolve( $path, function ( $identifier ) use ( $attributes ) {
+            return isset( $attributes[$identifier] ) ? $attributes[$identifier] : null;
+        } );
+        if ( $dates['created_source'] === expStaticImportDates::TODAY && $this->datesChain()->uses( 'children' ) )
+            $this->datesPending[(int)$object->attribute( 'id' )] = $path;
+        else
+            $this->storeDates( $object, $dates['created'], $dates['modified'] );
         $this->report['counts'][$status]++;
         $this->state->setPage( $path, array( 'object_id' => (int)$object->attribute( 'id' ), 'node_id' => $node ? (int)$node->attribute( 'node_id' ) : 0,
                                               'source_hash' => $sourceHash, 'written_hash' => $this->contentHash( $object, array_keys( $attributes ) ),
@@ -2268,7 +2289,12 @@ class expStaticImportEngine
                                                                         'attributes' => $attributes, 'language' => $this->language(),
                                                                         'section_id' => $this->sectionByIdentifier( (string)$this->rules->get( 'MediaSection', '' ) ) ) );
         if ( $object instanceof eZContentObject )
+        {
+            // the file's real dates (DateRules[]: git, meta, mtime), not the day of the import
+            $dates = $this->datesChain()->resolve( $path );
+            $this->storeDates( $object, $dates['created'], $dates['modified'] );
             $this->state->setAsset( $path, array( 'object_id' => (int)$object->attribute( 'id' ), 'node_id' => (int)$object->attribute( 'main_node_id' ), 'hash' => $hash ) );
+        }
         else
             $this->report['warnings'][] = "the media file $path could not be imported as $class";
     }
@@ -2381,6 +2407,407 @@ class expStaticImportEngine
     }
 
     /**
+     * @return expStaticImportDates the date rule chain of the type (DateRules[]) for the current source folder
+     */
+    protected function datesChain()
+    {
+        if ( $this->datesChain === null || $this->datesSource !== (string)$this->source )
+        {
+            $this->datesSource = (string)$this->source;
+            $this->datesChain = new expStaticImportDates( $this->rules, $this->datesSource, $this->workDir . '/history.git' );
+        }
+        return $this->datesChain;
+    }
+
+    /**
+     * Gives an object and its versions their real dates: the object's published (first published) and modified, each
+     * version's created and modified (the current one ends at the modified date, earlier ones at the created date).
+     * Only these fields are written (eZPersistentObject field filters), so nothing else of the object can be
+     * overwritten by a stale copy. The dates are no attributes, so the import hash (edit detection) does not see them.
+     * With immediate search indexing the object is indexed again (a delayed index reads the dates when it runs).
+     *
+     * @param eZContentObject $object
+     * @param int $created
+     * @param int $modified
+     * @param bool $index register the object for indexing when indexing is immediate
+     * @return bool whether anything changed
+     */
+    protected function storeDates( eZContentObject $object, $created, $modified, $index = true )
+    {
+        $created = (int)$created;
+        $modified = max( $created, (int)$modified );
+        $changed = false;
+        $db = eZDB::instance();
+        $db->begin();
+        if ( (int)$object->attribute( 'published' ) !== $created || (int)$object->attribute( 'modified' ) !== $modified )
+        {
+            $object->setAttribute( 'published', $created );
+            $object->setAttribute( 'modified', $modified );
+            $object->store( array( 'published', 'modified' ) );
+            $changed = true;
+        }
+        $current = (int)$object->attribute( 'current_version' );
+        $versions = eZPersistentObject::fetchObjectList( eZContentObjectVersion::definition(), null,
+                                                         array( 'contentobject_id' => (int)$object->attribute( 'id' ) ) );
+        foreach ( is_array( $versions ) ? $versions : array() as $version )
+        {
+            $versionModified = (int)$version->attribute( 'version' ) === $current ? $modified : $created;
+            if ( (int)$version->attribute( 'created' ) !== $created || (int)$version->attribute( 'modified' ) !== $versionModified )
+            {
+                $version->setAttribute( 'created', $created );
+                $version->setAttribute( 'modified', $versionModified );
+                $version->store( array( 'created', 'modified' ) );
+                $changed = true;
+            }
+        }
+        $db->commit();
+        if ( $changed && $index && eZINI::instance( 'site.ini' )->variable( 'SearchSettings', 'DelayedIndexing' ) !== 'enabled' )
+            eZContentOperationCollection::registerSearchObject( (int)$object->attribute( 'id' ) );
+        return $changed;
+    }
+
+    /**
+     * The earliest created and the latest modified date of a node's children.
+     *
+     * @param int $nodeID
+     * @param array|null $known object id => array( created, modified ): only these children count (null: every child
+     *                   by the dates it has)
+     * @return array|null array( 'created' => ..., 'modified' => ... ), null when no child has dates
+     */
+    protected function childrenDates( $nodeID, $known = null )
+    {
+        $rows = eZDB::instance()->arrayQuery( 'SELECT o.id, o.published, o.modified FROM ezcontentobject_tree t, ezcontentobject o
+                                               WHERE t.contentobject_id = o.id AND t.parent_node_id = ' . (int)$nodeID . ' AND t.node_id <> ' . (int)$nodeID );
+        $created = $modified = null;
+        foreach ( is_array( $rows ) ? $rows : array() as $row )
+        {
+            if ( is_array( $known ) )
+            {
+                if ( !isset( $known[(int)$row['id']] ) )
+                    continue;
+                list( $c, $m ) = $known[(int)$row['id']];
+            }
+            else
+                list( $c, $m ) = array( (int)$row['published'], (int)$row['modified'] );
+            if ( $c > 0 && ( $created === null || $c < $created ) )
+                $created = $c;
+            if ( $m > 0 && ( $modified === null || $m > $modified ) )
+                $modified = $m;
+        }
+        return $created === null ? null : array( 'created' => $created, 'modified' => $modified !== null ? $modified : $created );
+    }
+
+    /**
+     * The containers of a run that have no dates of their own take their children's, the deepest first.
+     *
+     * @param array $pending object id => path
+     * @return int how many took their children's dates
+     */
+    protected function datePendingContainers( array $pending )
+    {
+        $items = array();
+        foreach ( $pending as $id => $path )
+            if ( ( $object = eZContentObject::fetch( (int)$id ) ) && ( $node = $object->attribute( 'main_node' ) ) )
+                $items[] = array( $object, $node, $path );
+        usort( $items, function ( $a, $b ) { return (int)$b[1]->attribute( 'depth' ) - (int)$a[1]->attribute( 'depth' ); } );
+        $done = 0;
+        foreach ( $items as $item )
+        {
+            list( $object, $node, $path ) = $item;
+            $children = $this->childrenDates( (int)$node->attribute( 'node_id' ) );
+            $dates = $this->datesChain()->resolve( $path, null, $children );
+            if ( $dates['created_source'] !== expStaticImportDates::TODAY )
+                $done++;
+            $this->storeDates( $object, $dates['created'], $dates['modified'] );
+        }
+        return $done;
+    }
+
+    /**
+     * exp:static-import:dates: gives every object an earlier run imported (pages, sections and containers, comments,
+     * media, and the objects a class change replaced) its real dates by the type's DateRules[], in batches, resumable
+     * (var/<site>/static-import/<type>/dates-state.json; never the import's own state file, so it is safe next to a
+     * run). Objects without dates of their own take their children's in a second pass, the deepest first. Changed
+     * objects are queued for the search index (or indexed now) and their view caches cleared, batch by batch.
+     *
+     * @param array $options dry_run, restart, batch (objects per batch, default 200), limit (objects, for a test),
+     *                       index (queue, now or none; default queue), paths (shell patterns of source paths)
+     * @param callable|null $progress receives (done, of)
+     * @return array the report: counts by source, the year spread per family, the objects still dated today
+     */
+    public function restoreDates( array $options = array(), $progress = null )
+    {
+        $options = array_merge( array( 'dry_run' => false, 'restart' => false, 'batch' => 200, 'limit' => 0, 'index' => 'queue', 'paths' => array() ), $options );
+        $this->options['pull'] = false;
+        $this->options['dry_run'] = (bool)$options['dry_run'];
+        $this->report = array( 'counts' => array(), 'warnings' => array() );
+        $this->source = $this->prepareSource();
+        $this->loadStatePatches();
+        $chain = $this->datesChain();
+        $stateFile = $this->workDir . '/dates-state.json';
+        $state = !$options['restart'] && !$options['dry_run'] && is_file( $stateFile ) ? json_decode( (string)file_get_contents( $stateFile ), true ) : null;
+        if ( !is_array( $state ) || empty( $state['phase'] ) || $state['phase'] === 'done' )
+            $state = array( 'started' => time(), 'phase' => 'objects', 'position' => 0, 'resolved' => array(), 'pending' => array(), 'changed' => 0 );
+
+        // md5 of a source path => the path, for the pages, the media and the group pages of the source
+        $paths = array();
+        foreach ( array_keys( (array)$this->state->data['pages'] ) as $path )
+            $paths[md5( (string)$path )] = (string)$path;
+        $media = array();
+        foreach ( array_keys( isset( $this->state->data['assets'] ) ? (array)$this->state->data['assets'] : array() ) as $path )
+            $media[md5( (string)$path )] = (string)$path;
+        foreach ( $this->type->discover( $this->source ) as $path )
+            if ( substr( (string)$path, -1 ) === '/' )
+                $paths[md5( (string)$path )] = (string)$path;
+        $prefix = 'staticimport-' . $this->label . '-';
+        $rootPage = trim( (string)$this->rules->get( 'RootPage', '' ) );
+        $root = $rootPage !== '' ? $this->rootObject() : null;
+        $db = eZDB::instance();
+        $batch = max( 1, (int)$options['batch'] );
+        $total = (int)$db->arrayQuery( "SELECT COUNT(*) AS n FROM ezcontentobject WHERE remote_id LIKE '" . $db->escapeString( $prefix ) . "%'" )[0]['n'] + ( $root ? 1 : 0 );
+        $handled = 0;
+
+        $site = eZINI::instance( 'site.ini' );
+        $delayed = $site->variable( 'SearchSettings', 'DelayedIndexing' );
+        $finishBatch = function ( array $changedIDs ) use ( $options, $site, $delayed )
+        {
+            if ( $options['dry_run'] || !$changedIDs )
+                return;
+            if ( $options['index'] !== 'none' )
+            {
+                $site->setVariable( 'SearchSettings', 'DelayedIndexing', $options['index'] === 'queue' ? 'enabled' : 'disabled' );
+                foreach ( $changedIDs as $id )
+                    eZContentOperationCollection::registerSearchObject( (int)$id );
+                $site->setVariable( 'SearchSettings', 'DelayedIndexing', $delayed );
+            }
+            eZContentCacheManager::clearObjectViewCacheArray( array_map( 'intval', $changedIDs ) );
+        };
+        // which object is which source path, and its family (the first folder of the path) for the report
+        $describe = function ( eZContentObject $object ) use ( $paths, $media, $prefix, $root, $rootPage )
+        {
+            if ( $root && (int)$object->attribute( 'id' ) === (int)$root->attribute( 'id' ) )
+                return array( $rootPage, 'root' );
+            $rest = substr( (string)$object->attribute( 'remote_id' ), strlen( $prefix ) );
+            if ( strpos( $rest, 'media-' ) === 0 && preg_match( '/^media-([0-9a-f]{32})/', $rest, $m ) )
+                return array( isset( $media[$m[1]] ) ? $media[$m[1]] : '', 'media' );
+            $path = preg_match( '/^([0-9a-f]{32})/', $rest, $m ) && isset( $paths[$m[1]] ) ? $paths[$m[1]] : '';
+            if ( $path === '' )
+            {
+                $dataMap = $object->dataMap();
+                $path = isset( $dataMap['source_path'] ) ? trim( (string)$dataMap['source_path']->toString() ) : '';
+            }
+            if ( strpos( $path, '#' ) !== false )
+                return array( $path, 'comments' );
+            if ( $path === '' || substr( $path, -1 ) === '/' )
+                return array( $path, 'containers' );
+            return array( $path, strpos( $path, '/' ) !== false ? strstr( $path, '/', true ) : 'top' );
+        };
+        $save = function () use ( &$state, $stateFile, $options )
+        {
+            if ( !$options['dry_run'] )
+                file_put_contents( $stateFile, json_encode( $state ), LOCK_EX );
+        };
+
+        if ( $state['phase'] === 'objects' )
+        {
+            $ids = $root ? array( (int)$root->attribute( 'id' ) ) : array();
+            while ( true )
+            {
+                $rows = $db->arrayQuery( "SELECT id FROM ezcontentobject WHERE remote_id LIKE '" . $db->escapeString( $prefix ) . "%' AND id > " . (int)$state['position']
+                                         . ' ORDER BY id', array( 'limit' => $batch ) );
+                $batchIDs = array_merge( $ids, array_map( function ( $row ) { return (int)$row['id']; }, is_array( $rows ) ? $rows : array() ) );
+                $ids = array();
+                if ( !$batchIDs )
+                    break;
+                $changedIDs = array();
+                foreach ( $batchIDs as $id )
+                {
+                    $object = eZContentObject::fetch( $id );
+                    if ( !$object instanceof eZContentObject || (int)$object->attribute( 'status' ) !== eZContentObject::STATUS_PUBLISHED )
+                        continue;
+                    list( $path, $family ) = $describe( $object );
+                    if ( $options['paths'] && ( $path === '' || !expStaticImportHtmlType::matchesAny( $path, (array)$options['paths'] ) ) )
+                        continue;
+                    $dataMap = $object->dataMap();
+                    // an object a class change replaced ("<remote id>-was-<class>") has the dates of the page it was:
+                    // the values of the object that replaced it count where its own are empty
+                    $replacement = array();
+                    if ( preg_match( '/^(.+)-was-[a-z0-9_]+$/', (string)$object->attribute( 'remote_id' ), $m )
+                         && ( $current = eZContentObject::fetchByRemoteID( $m[1] ) ) instanceof eZContentObject )
+                        $replacement = $current->dataMap();
+                    // where neither holds a value (an attribute an earlier run left empty), the value the import would
+                    // write today, read from the source by the type
+                    $dates = $chain->resolve( $path, function ( $identifier ) use ( $dataMap, $replacement, $path ) {
+                        foreach ( array( $dataMap, $replacement ) as $map )
+                        {
+                            if ( !isset( $map[$identifier] ) )
+                                continue;
+                            $int = (int)$map[$identifier]->attribute( 'data_int' );
+                            $value = $int > 0 ? $int : trim( (string)$map[$identifier]->toString() );
+                            if ( expStaticImportDates::validTime( $value ) !== null )
+                                return $value;
+                        }
+                        $parsed = $this->parsedValues( $path );
+                        return isset( $parsed[$identifier] ) ? $parsed[$identifier] : null;
+                    } );
+                    if ( $dates['created_source'] === expStaticImportDates::TODAY && $chain->uses( 'children' ) && (int)$object->attribute( 'main_node_id' ) )
+                    {
+                        $state['pending'][$id] = array( $path, $family );
+                        continue;
+                    }
+                    if ( !$options['dry_run'] && $this->storeDates( $object, $dates['created'], $dates['modified'], false ) )
+                        $changedIDs[] = $id;
+                    $state['resolved'][$id] = array( $dates['created'], $dates['modified'], $dates['created_source'], $dates['modified_source'], $family );
+                }
+                $finishBatch( $changedIDs );
+                $state['changed'] += count( $changedIDs );
+                $state['position'] = max( $state['position'], max( $batchIDs ) );
+                $handled += count( $batchIDs );
+                $save();
+                eZContentObject::clearCache();
+                if ( $progress )
+                    call_user_func( $progress, count( $state['resolved'] ) + count( $state['pending'] ), $total );
+                if ( $options['limit'] > 0 && $handled >= (int)$options['limit'] )
+                    break;
+            }
+            if ( !( $options['limit'] > 0 && $handled >= (int)$options['limit'] ) )
+                $state['phase'] = 'containers';
+            $save();
+        }
+
+        if ( $state['phase'] === 'containers' )
+        {
+            // the deepest first, so a container's child containers have their dates before it takes theirs
+            $items = array();
+            foreach ( $state['pending'] as $id => $entry )
+                if ( ( $object = eZContentObject::fetch( (int)$id ) ) && ( $node = $object->attribute( 'main_node' ) ) )
+                    $items[] = array( (int)$id, (int)$node->attribute( 'node_id' ), (int)$node->attribute( 'depth' ), $entry );
+            usort( $items, function ( $a, $b ) { return $b[2] - $a[2]; } );
+            $known = array();
+            foreach ( $state['resolved'] as $id => $row )
+                $known[(int)$id] = array( $row[0], $row[1] );
+            $changedIDs = array();
+            foreach ( $items as $item )
+            {
+                list( $id, $nodeID, , $entry ) = $item;
+                $dates = $chain->resolve( $entry[0], null, $this->childrenDates( $nodeID, $known ) );
+                $object = eZContentObject::fetch( $id );
+                if ( !$options['dry_run'] && $object && $this->storeDates( $object, $dates['created'], $dates['modified'], false ) )
+                    $changedIDs[] = $id;
+                if ( $dates['created_source'] !== expStaticImportDates::TODAY )
+                    $known[$id] = array( $dates['created'], $dates['modified'] );
+                $state['resolved'][$id] = array( $dates['created'], $dates['modified'], $dates['created_source'], $dates['modified_source'], $entry[1] );
+                unset( $state['pending'][$id] );
+                if ( count( $changedIDs ) >= $batch )
+                {
+                    $finishBatch( $changedIDs );
+                    $state['changed'] += count( $changedIDs );
+                    $changedIDs = array();
+                    $save();
+                    eZContentObject::clearCache();
+                }
+            }
+            $finishBatch( $changedIDs );
+            $state['changed'] += count( $changedIDs );
+            $state['phase'] = 'done';
+            $save();
+        }
+        if ( $site->variable( 'SearchSettings', 'DelayedIndexing' ) !== $delayed )
+            $site->setVariable( 'SearchSettings', 'DelayedIndexing', $delayed );
+
+        $report = self::datesReport( $state['resolved'] );
+        $report['changed'] = (int)$state['changed'];
+        $report['pending'] = count( $state['pending'] );
+        $report['phase'] = $state['phase'];
+        $report['dry_run'] = (bool)$options['dry_run'];
+        $report['index'] = $options['index'];
+        if ( !$options['dry_run'] )
+        {
+            if ( !is_dir( $this->workDir . '/reports' ) )
+                mkdir( $this->workDir . '/reports', 0775, true );
+            file_put_contents( $this->workDir . '/reports/dates-' . date( 'Ymd-His' ) . '.json',
+                               json_encode( array( 'schema' => self::SCHEMA, 'type' => $this->label ) + $report, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES ) );
+        }
+        return $report;
+    }
+
+    /** @var array the page last read by parsedValues(): array( 'page' => path, 'values' => path => attributes ) */
+    protected $parsedCache = array( 'page' => null, 'values' => array() );
+
+    /**
+     * The attribute values the import would write today for a source path: its page read and mapped by the type, and
+     * the pages it carries (its comments, by their paths "<page>#comment<id>"). The last page read is kept, since a
+     * page's comments follow it.
+     *
+     * @param string $path
+     * @return array attribute identifier => value, empty when the path is no page of the source
+     */
+    protected function parsedValues( $path )
+    {
+        $path = (string)$path;
+        $pagePath = strpos( $path, '#' ) !== false ? strstr( $path, '#', true ) : $path;
+        if ( $pagePath === '' || substr( $pagePath, -1 ) === '/' )
+            return array();
+        if ( $this->parsedCache['page'] !== $pagePath )
+        {
+            $values = array();
+            try
+            {
+                $page = $this->type->parse( $this->source, $pagePath );
+                if ( is_array( $page ) && !isset( $page['redirect_to'] ) && !isset( $page['asset_of'] ) )
+                {
+                    $walk = function ( array $item ) use ( &$walk, &$values )
+                    {
+                        $mapped = $this->type->map( $item );
+                        $values[(string)$item['path']] = isset( $mapped['attributes'] ) ? (array)$mapped['attributes'] : array();
+                        foreach ( isset( $item['children'] ) ? (array)$item['children'] : array() as $child )
+                            $walk( $child );
+                    };
+                    $walk( $page );
+                }
+            }
+            catch ( Throwable $e )
+            {
+                $values = array();
+            }
+            $this->parsedCache = array( 'page' => $pagePath, 'values' => $values );
+        }
+        return isset( $this->parsedCache['values'][$path] ) ? $this->parsedCache['values'][$path] : array();
+    }
+
+    /**
+     * @param array $resolved object id => array( created, modified, created source, modified source, family )
+     * @return array( 'objects' => n, 'created_sources' => source => n, 'modified_sources' => source => n,
+     *                'today' => n, 'today_percent' => float, 'families' => family => array( n, min, median, max year ) )
+     */
+    public static function datesReport( array $resolved )
+    {
+        $out = array( 'objects' => count( $resolved ), 'created_sources' => array(), 'modified_sources' => array(), 'today' => 0, 'families' => array() );
+        $years = $familySources = array();
+        foreach ( $resolved as $row )
+        {
+            list( $created, , $createdSource, $modifiedSource, $family ) = array_pad( array_values( $row ), 5, '' );
+            $out['created_sources'][$createdSource] = ( isset( $out['created_sources'][$createdSource] ) ? $out['created_sources'][$createdSource] : 0 ) + 1;
+            $out['modified_sources'][$modifiedSource] = ( isset( $out['modified_sources'][$modifiedSource] ) ? $out['modified_sources'][$modifiedSource] : 0 ) + 1;
+            $familySources[$family][$createdSource] = ( isset( $familySources[$family][$createdSource] ) ? $familySources[$family][$createdSource] : 0 ) + 1;
+            if ( $createdSource === expStaticImportDates::TODAY )
+                $out['today']++;
+            $years[$family][] = (int)date( 'Y', (int)$created );
+        }
+        arsort( $out['created_sources'] );
+        arsort( $out['modified_sources'] );
+        $out['today_percent'] = $out['objects'] ? round( 100 * $out['today'] / $out['objects'], 2 ) : 0.0;
+        ksort( $years );
+        foreach ( $years as $family => $list )
+        {
+            sort( $list );
+            $out['families'][$family] = array( 'objects' => count( $list ), 'min' => $list[0], 'median' => $list[(int)floor( ( count( $list ) - 1 ) / 2 )],
+                                               'max' => $list[count( $list ) - 1], 'created_sources' => $familySources[$family] );
+        }
+        return $out;
+    }
+
+    /**
      * The hash of an object's current content in the attributes the import writes.
      *
      * @param eZContentObject $object
@@ -2451,9 +2878,10 @@ class expStaticImportEngine
             if ( $code !== 0 )
                 $this->report['warnings'][] = 'git pull failed, the import uses the copy it has: ' . implode( ' ', array_slice( $output, -2 ) );
         }
-        // GitAuthors=enabled: the history of the repository (who changed which page, and when), kept as a bare clone
-        // without file contents (history.git in the work folder), cloned once and fetched with every pull
-        if ( $this->rules->enabled( 'GitAuthors', false ) )
+        // GitAuthors=enabled, or a git rule in DateRules[]: the history of the repository (who changed which page, and
+        // when), kept as a bare clone without file contents (history.git in the work folder), cloned once and fetched
+        // with every pull
+        if ( $this->rules->enabled( 'GitAuthors', false ) || $this->datesChain()->uses( 'git' ) )
         {
             $history = $this->workDir . '/history.git';
             if ( !is_dir( $history ) )

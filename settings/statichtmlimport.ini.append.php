@@ -39,6 +39,15 @@ TypeList[sitemap-crawl]=expStaticImportTypeSitemapCrawl
 #                                     caption, credit, source_path)
 #   IncludePaths[] ExcludePaths[] HiddenPaths[] DuplicatePatterns[] (regular expressions) DeduplicateAll
 #   CreateRedirects (default enabled)  RedirectPrefix   old paths answer with a redirect to their node
+#   DateRules[]=<created|modified>;<source>[;<arguments>[;<label>[;<paths>]]]   the real dates of every object (its
+#                                     published and modified dates, its versions'), the first rule of a field that
+#                                     gives a date wins; sources: attribute (AttributeMap[] identifiers), git (first,
+#                                     last; nobulk leaves out commits of more than DateGitBulkCommitFiles files), meta
+#                                     (<meta> names), mtime (never the clone's time), children (a section's). Default:
+#                                     git, meta, mtime. The day of the run only when nothing gives a date.
+#                                     DateGitPathAliases[]=<regex>;<replacement> earlier names of a path in the
+#                                     history; DateTimezone; DateMtimeCloneWindow. exp:static-import:dates applies
+#                                     them to the objects of earlier runs.
 # HTML types: Suffixes[] IndexFiles[] TitleSelector BodySelector OriginalSelector RemoveTitleFromBody MetaSelectors[]
 #   PageIdPatterns[] TitleSuffixPatterns[] RemoveSelectors[] UnwrapSelectors[] PanelSelectors[<type>] CodeSelectors[]
 #   CodeLineSelector CodeLanguagePatterns[] ExpandSelectors[] ExpandTitleSelector ChildrenSelectors[] AssetSuffixes[]

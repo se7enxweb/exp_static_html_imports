@@ -177,6 +177,31 @@ er geschrieben wurde (der Betreff eines Kommentars): Bei ihnen kommt der Zusatz 
 Titelattribut behält den Titel, und der Kernel macht die Adresse eindeutig. Ein durch einen Klassenwechsel ersetztes
 Objekt (Remote-ID `<id>-was-<Klasse>`) belegt keinen Namen mehr.
 
+## Daten: wann eine Seite zuerst veröffentlicht und zuletzt geändert wurde
+
+Jedes Objekt erhält die echten Daten seiner Seite, nie den Tag des Imports: das Veröffentlichungs- und Änderungsdatum
+des Objekts und das Erstellungs- und Änderungsdatum seiner Versionen, gesetzt, wenn der Import es anlegt oder
+aktualisiert. `DateRules[]` ist eine Kette, `<created|modified>;<Quelle>[;<Argumente>[;<Bezeichnung>[;<Pfade>]]]`;
+die erste Regel eines Felds, die ein Datum liefert, gewinnt.
+
+| Quelle | Argumente | Liefert |
+|---|---|---|
+| `attribute` | Bezeichner aus AttributeMap[] | die eigenen Werte der Seite, etwa `written_at` und `last_updated_at` der Autorenzeile oder das Datum eines Kommentars |
+| `git` | `first` oder `last`, und `nobulk` | den Commit, der die Datei hinzugefügt hat, oder den letzten, der sie geändert hat; `nobulk` lässt Commits mit mehr als `DateGitBulkCommitFiles` Dateien aus (Standard 1000: Umbauten der ganzen Website) |
+| `meta` | `<meta>`-Namen | Datums-Tags nach name, property, itemprop oder http-equiv (ISO-Daten, Unix-Zeiten in Sekunden oder Millisekunden) |
+| `mtime` | | die Dateizeit, nie die Zeit des Klonens oder später (`DateMtimeCloneWindow`, Standard 86400 Sekunden) |
+| `children` | | das früheste Erstellungs- und das späteste Änderungsdatum der Kinder des Objekts (ein Abschnitt ohne Datei) |
+
+Die Bezeichnung nennt die Quelle im Bericht (Standard: die Quelle); die Pfade (Shell-Muster) beschränken eine Regel auf
+manche Seiten. Ein Erstellungsdatum nach dem Änderungsdatum übernimmt das Änderungsdatum; eine Seite mit nur einem
+Datum hat es als beide. Der Tag des Laufs gilt nur, wenn nichts ein Datum liefert, und der Bericht zählt ihn. Der
+Git-Index entsteht einmal aus einem `git log --name-only` über den ganzen Verlauf (`history.git`, geklont, sobald eine
+Regel git liest), und `DateGitPathAliases[]=<Regex>;<Ersetzung>` nennt frühere Namen eines Pfads, damit ein
+umbenannter Ordner seinen ersten Commit behält. Ohne `DateRules[]` lautet die Kette: git, die Meta-Tags, die Dateizeit.
+
+Die Daten sind keine Attribute: Der Import-Hash sieht sie nicht, also markiert der nächste Lauf nichts.
+`exp:static-import:dates` bringt die Objekte früherer Läufe auf denselben Stand.
+
 ## Konsolenschritte neben einem Lauf
 
 Sie schreiben nie die Statusdatei (ein laufender Import würde sie überschreiben): was der nächste Lauf wissen muss,
@@ -189,3 +214,4 @@ kommt in einen Status-Patch in `state-patches/` des Arbeitsordners, den dieser L
 | `exp:static-import:hide-non-pages --type=<label>` | verbirgt importierte Seiten, die heute keine Seiten sind (Fehlerseiten, Binärdateien, Ansichten, Kopien, ausgeschlossene) |
 | `exp:static-import:bylines --type=<label> [--fill [--replace-roles]]` | die Prüfung der Autorenzeilen auf Datenverlust, und das Auffüllen |
 | `exp:static-import:comments --type=<label> [--trash-replaced]` | die Prüfung der Kommentare auf Datenverlust, und das Entfernen der von ihnen ersetzten Objekte |
+| `exp:static-import:dates --type=<label> [--dry-run] [--restart] [--index=queue\|now\|none]` | jedes importierte Objekt (Seiten, Abschnitte, Kommentare, Medien) erhält seine echten Daten nach `DateRules[]`, in fortsetzbaren Stapeln (`dates-state.json`); geänderte Objekte kommen in die Warteschlange des Suchindex, ihre View-Caches werden geleert |
