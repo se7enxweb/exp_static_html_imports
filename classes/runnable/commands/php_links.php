@@ -29,13 +29,15 @@ class Links extends \Exponential\Runnable\Command
                 . "  --limit=<n>        stop after n objects (resume later)\n"
                 . "  --restart          from the first object again\n"
                 . "  --object=<id>      only this object (may be repeated; the position is not saved)\n"
+                . "  --settle           after the other console steps: move the baseline of each page this step changed whose\n"
+                . "                     baseline is still the one before its change (links-baselines.jsonl)\n"
                 . "  --dry-run          count, change nothing\n"
                 . "  --format=json      as JSON",
             'use-session' => false, 'use-modules' => true, 'use-extensions' => true
         ) );
-        $options = $this->startup( '[type:][batch:][limit:][restart][object:*][dry-run][format:]', '',
+        $options = $this->startup( '[type:][batch:][limit:][restart][object:*][settle][dry-run][format:]', '',
                                    array( 'type' => 'The import type', 'batch' => 'Objects per batch', 'limit' => 'Stop after n objects', 'restart' => 'From the first object',
-                                          'object' => 'Only these objects', 'dry-run' => 'Change nothing', 'format' => 'text or json' ) );
+                                          'object' => 'Only these objects', 'settle' => 'Settle the baselines', 'dry-run' => 'Change nothing', 'format' => 'text or json' ) );
         $type = !empty( $options['type'] ) ? ltrim( (string)$options['type'], '-' ) : '';
         if ( $type === '' )
         {
@@ -49,6 +51,20 @@ class Links extends \Exponential\Runnable\Command
             'limit' => !empty( $options['limit'] ) ? (int)$options['limit'] : 0, 'restart' => !empty( $options['restart'] ),
             'objects' => !empty( $options['object'] ) ? array_map( 'intval', (array)$options['object'] ) : array() ) );
         $json = isset( $options['format'] ) && $options['format'] === 'json';
+        if ( !empty( $options['settle'] ) )
+        {
+            $result = $rewriter->settle();
+            if ( $json )
+                $this->output( json_encode( array( 'schema' => \expStaticImportEngine::SCHEMA, 'ok' => true, 'type' => $type ) + $result, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES ) );
+            else
+                $this->output( sprintf( 'PASS %d pages: %d baselines settled, %d already current, %d changed since (left to the edit detection%s), %d unknown',
+                                        $result['pages'],
+                                        $result['settled'], $result['already'], $result['changed'],
+                                        $result['changed_objects'] ? ': objects ' . implode( ',', array_slice( $result['changed_objects'], 0, 20 ) ) . ( count( $result['changed_objects'] ) > 20 ? ' ...' : '' ) : '',
+                                        $result['unknown'] ) );
+            $this->shutdown( 0 );
+            return 0;
+        }
         $self = $this;
         $totals = $rewriter->run( $json ? null : function ( $done, $last, $totals ) use ( $self ) {
             $self->output( sprintf( '  %6d objects (up to id %d): %d links rewritten, %d unresolved', $done, $last, $totals['rewritten'], $totals['unresolved'] ) );

@@ -139,8 +139,13 @@ class expStaticImportLinkRewriter
             $patch = array();
             $changedObjects = array();
             $reportLines = array();
+            $baselineLines = array();
             if ( !$dry )
+            {
+                // the baselines other console steps moved meanwhile (route renames, relink): their patches first
+                $this->engine->reloadStatePatches();
                 $db->begin();
+            }
             foreach ( $versions as $objectID => $version )
             {
                 $last = $objectID;
@@ -177,7 +182,8 @@ class expStaticImportLinkRewriter
                 // the edit detection: a page nobody edited keeps its baseline (the written hash moves with the links)
                 $entry = $path !== '' ? $state->page( $path ) : null;
                 $fields = $entry && !empty( $entry['written_fields'] ) ? (array)$entry['written_fields'] : array();
-                $wasClean = $entry && !empty( $entry['written_hash'] ) && $fields && $this->engine->writtenHashOf( $object, $fields ) === $entry['written_hash'];
+                $before = $fields ? $this->engine->writtenHashOf( $object, $fields ) : '';
+                $wasClean = $entry && !empty( $entry['written_hash'] ) && $before !== '' && $before === $entry['written_hash'];
                 foreach ( $changes as $change )
                 {
                     $row = $change['row'];
@@ -192,10 +198,17 @@ class expStaticImportLinkRewriter
                 }
                 eZContentObject::clearCache( array( $objectID ) );
                 $changedObjects[] = $objectID;
-                if ( $wasClean )
+                $after = '';
+                if ( $fields )
                 {
                     $object = eZContentObject::fetch( $objectID );
-                    $patch[$path] = array( 'written_hash' => $this->engine->writtenHashOf( $object, $fields ),
+                    $after = $this->engine->writtenHashOf( $object, $fields );
+                    // for --settle: a baseline another step moves later is moved again when it is still the one before
+                    $baselineLines[] = json_encode( array( 'object' => $objectID, 'path' => $path, 'before' => $before, 'after' => $after, 'at' => time() ), JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE );
+                }
+                if ( $wasClean )
+                {
+                    $patch[$path] = array( 'written_hash' => $after,
                                            'unresolved' => array_values( array_unique( array_map( function ( $u ) { return $u['target'] !== '' ? $u['target'] : $u['href']; }, $pageUnresolved ) ) ) );
                     $totals['baselines_moved']++;
                 }
@@ -217,6 +230,8 @@ class expStaticImportLinkRewriter
                     if ( $nodeIDs )
                         eZContentCacheManager::clearNodeViewCacheArray( $nodeIDs, $chunk );
                 }
+                if ( $baselineLines )
+                    file_put_contents( $work . '/links-baselines.jsonl', implode( "\n", $baselineLines ) . "\n", FILE_APPEND );
                 if ( !$this->options['objects'] )
                     file_put_contents( $cursorFile, json_encode( array( 'last_object_id' => $last, 'totals' => $totals, 'saved' => date( 'c' ) ), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES ) );
             }
@@ -234,6 +249,68 @@ class expStaticImportLinkRewriter
         $totals['unresolved_examples'] = array_intersect_key( $totals['unresolved_examples'], $totals['unresolved_targets'] );
         $totals['external_hosts'] = array_slice( $totals['external_hosts'], 0, 40, true );
         return $totals;
+    }
+
+    /**
+     * The baselines of the pages this step changed, settled after the other console steps (exp:static-import:links
+     * --settle): for each page of links-baselines.jsonl whose baseline in effect (the state with every patch) is the
+     * hash it had before its links were rewritten, and whose content still has the hash after, the baseline moves to
+     * that hash (a state patch). A page whose content changed since, or whose baseline is neither, is left alone and
+     * listed: that is an editor's change, or another step's, for the next run to flag.
+     *
+     * @return array settled, already (the baseline is the current hash), changed (listed), unknown, lines
+     */
+    public function settle()
+    {
+        $this->engine->prepareForConsoleStep();
+        $state = $this->engine->state();
+        $file = $this->engine->workDirectory() . '/links-baselines.jsonl';
+        $out = array( 'lines' => 0, 'settled' => 0, 'already' => 0, 'changed' => 0, 'unknown' => 0, 'changed_objects' => array(), 'patch' => '' );
+        $latest = array();
+        foreach ( is_file( $file ) ? file( $file, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES ) : array() as $line )
+        {
+            $record = json_decode( $line, true );
+            if ( is_array( $record ) && !empty( $record['path'] ) )
+            {
+                // the first record holds the hash before this step's first change, the last the hash after its last
+                $path = (string)$record['path'];
+                $latest[$path] = isset( $latest[$path] ) ? array( 'before' => $latest[$path]['before'] ) + $record : $record;
+                $out['lines']++;
+            }
+        }
+        $out['pages'] = count( $latest );
+        $patch = array();
+        $n = 0;
+        foreach ( $latest as $path => $record )
+        {
+            if ( ++$n % 200 === 0 )
+                eZContentObject::clearCache();
+            $entry = $state->page( $path );
+            $object = eZContentObject::fetch( (int)$record['object'] );
+            if ( !$entry || empty( $entry['written_fields'] ) || !$object instanceof eZContentObject )
+            {
+                $out['unknown']++;
+                continue;
+            }
+            $now = $this->engine->writtenHashOf( $object, (array)$entry['written_fields'] );
+            $baseline = isset( $entry['written_hash'] ) ? (string)$entry['written_hash'] : '';
+            if ( $baseline === $now )
+                $out['already']++;
+            else if ( $baseline === $record['before'] && $now === $record['after'] )
+            {
+                $patch[$path] = array( 'written_hash' => $now );
+                $out['settled']++;
+            }
+            else
+            {
+                $out['changed']++;
+                if ( count( $out['changed_objects'] ) < 500 )
+                    $out['changed_objects'][] = (int)$record['object'];
+            }
+        }
+        if ( $patch )
+            $out['patch'] = $this->engine->addStatePatch( $patch, 'links-settle' );
+        return $out;
     }
 
     /**

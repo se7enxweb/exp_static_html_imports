@@ -2492,6 +2492,15 @@ class expStaticImportEngine
     }
 
     /**
+     * The state patches of the other console steps, read again into this process's state (a long console step reads
+     * them before each batch).
+     */
+    public function reloadStatePatches()
+    {
+        $this->loadStatePatches();
+    }
+
+    /**
      * Prepares the source and the state patches of earlier console steps, without a pull (for a console step).
      */
     public function prepareForConsoleStep()
