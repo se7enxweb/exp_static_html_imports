@@ -259,7 +259,21 @@ class expStaticImportEngine
             $this->fail( $path, get_class( $e ) . ': ' . $e->getMessage() );
             return;
         }
-        $sourceHash = sha1( $page['class'] . "\0" . $page['title'] . "\0" . $page['body_html'] );
+        $this->importParsedPage( $page, $user );
+    }
+
+    /**
+     * Writes one mapped page (and the pages it carries, such as its comments, below it).
+     *
+     * @param array $page
+     * @param eZUser $user
+     */
+    protected function importParsedPage( array $page, eZUser $user )
+    {
+        $path = $page['path'];
+        // the pages a page carries (its comments) count too, so a new comment brings its page up again
+        $sourceHash = sha1( $page['class'] . "\0" . $page['title'] . "\0" . $page['body_html'] . "\0"
+                             . ( empty( $page['children'] ) ? '' : md5( json_encode( $page['children'] ) ) ) );
         $previous = $this->state->page( $path );
 
         // the same content under another path: one node, this path redirects to it
@@ -361,6 +375,7 @@ class expStaticImportEngine
         $this->state->setPage( $path, array( 'object_id' => (int)$object->attribute( 'id' ), 'node_id' => $node ? (int)$node->attribute( 'node_id' ) : 0,
                                               'source_hash' => $sourceHash, 'written_hash' => $this->contentHash( $object, array_keys( $attributes ) ),
                                               'status' => $status, 'class' => $page['class'], 'aliases' => isset( $page['aliases'] ) ? $page['aliases'] : array(),
+                                              'child_of' => isset( $page['child_of'] ) ? $page['child_of'] : '',
                                               'duplicate_of' => '' ) );
         if ( $unresolved )
         {
@@ -368,6 +383,11 @@ class expStaticImportEngine
             $this->state->data['pending_links'][$path] = true;
         }
         $this->audit( 'system.staticimport_page.' . ( $status === 'created' ? 'create' : 'update' ), array( 'path' => $path, 'object' => (int)$object->attribute( 'id' ) ) );
+        foreach ( isset( $page['children'] ) ? (array)$page['children'] : array() as $child )
+        {
+            $child['child_of'] = isset( $page['child_of'] ) ? $page['child_of'] : $path;
+            $this->importParsedPage( $this->type->map( $child ), $user );
+        }
     }
 
     /**
@@ -407,7 +427,8 @@ class expStaticImportEngine
                 return $m[0];
             }
             $alt = preg_match( '/\balt=["\']([^"\']*)["\']/i', $m[0], $a ) ? $a[1] : '';
-            return '<img id="eZObject_' . (int)$asset['object_id'] . '" src="' . htmlspecialchars( $m[1] ) . '" alt="' . $alt . '" />';
+            $align = preg_match( '/\bdata-align=["\']([a-z]+)["\']/i', $m[0], $g ) ? ' align="' . $g[1] . '"' : '';
+            return '<img id="eZObject_' . (int)$asset['object_id'] . '" src="' . htmlspecialchars( $m[1] ) . '" alt="' . $alt . '"' . $align . ' />';
         }, $html );
         return array( $html, array_values( array_unique( $unresolved ) ) );
     }
@@ -521,6 +542,8 @@ class expStaticImportEngine
         $present = array_fill_keys( $paths, true );
         foreach ( $this->state->data['pages'] as $path => $entry )
         {
+            if ( !empty( $entry['child_of'] ) && isset( $present[$entry['child_of']] ) )
+                continue;
             if ( isset( $present[$path] ) || empty( $entry['node_id'] ) || ( isset( $entry['status'] ) && $entry['status'] === 'removed' ) )
                 continue;
             $node = eZContentObjectTreeNode::fetch( (int)$entry['node_id'] );

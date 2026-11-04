@@ -31,6 +31,24 @@ class expStaticImportTypeDocHtml extends expStaticImportHtmlType
         return 'doc-html';
     }
 
+    /**
+     * The documentation export's own selectors, for what the rules leave out (an installation without exp_doc).
+     */
+    public function configure( expStaticImportRules $rules )
+    {
+        $defaults = array(
+            'TitleSelector' => '#title-text, .attribute-heading h1, h1',
+            'BodySelector' => '#main-content, .area-docmain-normal .content-view-full, #main, body',
+            'DefaultClass' => 'folder',
+            'AttributeMap' => array( 'folder/name' => 'title', 'folder/short_description' => 'body' ),
+        );
+        $values = $rules->all();
+        foreach ( $defaults as $key => $value )
+            if ( !isset( $values[$key] ) || $values[$key] === '' || $values[$key] === array() )
+                $values[$key] = $value;
+        parent::configure( new expStaticImportRules( $rules->type(), $values ) );
+    }
+
     public function parse( $source, $path )
     {
         $page = parent::parse( $source, $path );
@@ -66,7 +84,89 @@ class expStaticImportTypeDocHtml extends expStaticImportHtmlType
         if ( preg_match( '#/(\d+(?:[.-]\d+)*(?:\.x)?)(?:/|\.html$)#', $path, $m ) )
             $meta['version'] = str_replace( '-', '.', $m[1] );
         $page['meta'] = $meta;
+        $page['children'] = $this->comments( $source, $path );
         return $page;
+    }
+
+    /**
+     * The readers' comments of a page (CommentsSelector, e.g. #comments-content), as pages of CommentClass below it:
+     * one <li> per comment with its heading (h2), date (p.date), author (p.author) and text (.attribute-short), the
+     * replies in a <ul> inside the <li>, below the comment they answer.
+     *
+     * @param string $source
+     * @param string $path
+     * @return array the comment pages, each with its replies in 'children'
+     */
+    protected function comments( $source, $path )
+    {
+        $selector = (string)$this->rules->get( 'CommentsSelector', '' );
+        $class = (string)$this->rules->get( 'CommentClass', '' );
+        if ( $selector === '' || $class === '' )
+            return array();
+        $html = (string)@file_get_contents( rtrim( $source, '/' ) . '/' . $path );
+        if ( strpos( $html, 'class-comment' ) === false )
+            return array();
+        $doc = expStaticImportDom::load( $html );
+        $root = expStaticImportDom::first( $doc, $selector );
+        if ( !$root )
+            return array();
+        foreach ( $root->childNodes as $child )
+            if ( $child instanceof DOMElement && $child->nodeName === 'ul' )
+                return $this->commentList( $doc, $child, $path, $path, $class );
+        return array();
+    }
+
+    /**
+     * @param DOMDocument $doc
+     * @param DOMElement $ul
+     * @param string $pagePath
+     * @param string $parentPath
+     * @param string $class
+     * @return array
+     */
+    protected function commentList( DOMDocument $doc, DOMElement $ul, $pagePath, $parentPath, $class )
+    {
+        $comments = array();
+        $position = 0;
+        foreach ( $ul->childNodes as $li )
+        {
+            if ( !$li instanceof DOMElement || $li->nodeName !== 'li' )
+                continue;
+            $position++;
+            $heading = expStaticImportDom::first( $doc, '.attribute-heading', $li );
+            $id = $heading && preg_match( '/(\d+)/', $heading->getAttribute( 'id' ), $m ) ? $m[1] : (string)$position;
+            $title = ( $h = expStaticImportDom::first( $doc, '.attribute-heading h2', $li ) ) ? expStaticImportDom::text( $h ) : '';
+            $date = ( $d = expStaticImportDom::first( $doc, 'p.date', $li ) ) ? expStaticImportDom::text( $d ) : '';
+            $author = ( $a = expStaticImportDom::first( $doc, 'p.author', $li ) ) ? expStaticImportDom::text( $a ) : '';
+            $textNode = expStaticImportDom::first( $doc, '.attribute-short', $li );
+            $text = $textNode ? trim( expStaticImportDom::innerHtml( $textNode ) ) : '';
+            $commentPath = $pagePath . '#comment' . $id;
+            $time = $date !== '' ? strtotime( preg_replace( '/^[A-Za-z]+\s+/', '', $date ) ) : 0;
+            $comment = array(
+                'path' => $commentPath,
+                'title' => $title !== '' ? $title : 'Comment',
+                'body_html' => $text === '' ? '' : ( preg_match( '/^\s*<(p|ul|ol|div|pre)\b/i', $text ) ? $text : '<p>' . $text . '</p>' ),
+                'original_html' => $text,
+                'meta' => array( 'author' => $author, 'modified' => $time ?: null, 'labels' => array() ),
+                'hidden' => false,
+                'aliases' => array(),
+                'class_fixed' => $class,
+                'parent_fixed' => $parentPath,
+                'priority' => $position,
+                'children' => array(),
+            );
+            foreach ( $li->getElementsByTagName( 'ul' ) as $nested )
+            {
+                // only the replies list of this <li>, not the lists inside the comment text
+                if ( $nested->parentNode === $li || ( $nested->parentNode && $nested->parentNode->parentNode === $li ) )
+                {
+                    $comment['children'] = $this->commentList( $doc, $nested, $pagePath, $commentPath, $class );
+                    break;
+                }
+            }
+            $comments[] = $comment;
+        }
+        return $comments;
     }
 
     protected function fields( array $page )

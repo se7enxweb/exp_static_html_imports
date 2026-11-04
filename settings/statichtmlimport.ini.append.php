@@ -113,21 +113,13 @@ RemoveSelectors[]=nav
 RemoveSelectors[]=header
 RemoveSelectors[]=footer
 
-# The documentation site's static export. exp_doc gives this type its classes and defaults in its own
-# statichtmlimport.ini.append.php; without exp_doc it imports into folders.
+# The documentation site's static export. exp_doc gives this type its classes, selectors and every other rule in its
+# own statichtmlimport.ini.append.php; only the source is set here. (Settings of an extension listed earlier in
+# ActiveExtensions win over a later one's, so rules set here could not be changed by exp_doc.) Without exp_doc the
+# type falls back to the selectors of its class and imports into folders.
 [Type_doc-html]
 RulesFormat=ini
 SourceRepository=https://github.com/se7enxweb/exponential.doc.exponential.earth.git
 SourceBranch=master
-Suffixes[]
-Suffixes[]=html
-IndexFiles[]
-IndexFiles[]=index.html
-TitleSelector=.attribute-heading h1, h1
-BodySelector=.area-docmain-normal .content-view-full, #main, body
-DefaultClass=folder
-AttributeMap[]
-AttributeMap[folder/name]=title
-AttributeMap[folder/short_description]=body
 
 */ ?>

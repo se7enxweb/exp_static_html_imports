@@ -61,9 +61,39 @@ class expStaticImportHtmlCleaner
             foreach ( $this->toArray( expStaticImportDom::query( $doc, $selector, $body ) ) as $node )
                 $this->replace( $node, $this->customTag( $doc, 'doc_children', array() ) );
 
+        // literal blocks (the source's own rendered code, e.g. <pre class="wordwrap"> of one <span class="line"> per
+        // line): one plain text <pre> that keeps its class, which the parser turns into a literal with that class
+        $lineSelector = (string)$this->rules->get( 'CodeLineSelector', '' );
+        foreach ( $this->rules->getList( 'LiteralSelectors' ) as $selector )
+            foreach ( $this->toArray( expStaticImportDom::query( $doc, $selector, $body ) ) as $node )
+            {
+                $lines = $lineSelector !== '' ? $this->toArray( expStaticImportDom::query( $doc, $lineSelector, $node ) ) : array();
+                $text = $lines ? implode( "\n", array_map( function ( $line ) { return rtrim( str_replace( "\xc2\xa0", ' ', $line->textContent ) ); }, $lines ) )
+                               : rtrim( str_replace( "\xc2\xa0", ' ', $node->textContent ) );
+                $pre = $doc->createElement( 'pre' );
+                if ( $node->getAttribute( 'class' ) !== '' )
+                    $pre->setAttribute( 'class', trim( preg_replace( '/\s+/', ' ', $node->getAttribute( 'class' ) ) ) );
+                $pre->appendChild( $doc->createTextNode( $text ) );
+                $pre->setAttribute( 'data-static-import', 'literal' );
+                $this->replace( $node, $pre );
+            }
+
+        // aligned images: a wrapper (e.g. div.object-center) gives its image an alignment, which the import keeps
+        // on the embed, and goes
+        foreach ( $this->rules->getHash( 'EmbedAlignSelectors' ) as $align => $selector )
+            foreach ( $this->toArray( expStaticImportDom::query( $doc, $selector, $body ) ) as $node )
+            {
+                foreach ( $this->toArray( $node->getElementsByTagName( 'img' ) ) as $img )
+                    $img->setAttribute( 'data-align', $align );
+                $this->unwrap( $node );
+            }
+
         foreach ( $this->rules->getList( 'CodeSelectors' ) as $selector )
             foreach ( $this->toArray( expStaticImportDom::query( $doc, $selector, $body ) ) as $node )
-                $this->convertCode( $doc, $node );
+                if ( $node->getAttribute( 'data-static-import' ) !== 'literal' )
+                    $this->convertCode( $doc, $node );
+        foreach ( iterator_to_array( $xpath->query( './/*[@data-static-import]', $body ) ) as $node )
+            $node->removeAttribute( 'data-static-import' );
 
         foreach ( $this->rules->getHash( 'PanelSelectors' ) as $type => $selector )
             foreach ( $this->toArray( expStaticImportDom::query( $doc, $selector, $body ) ) as $node )

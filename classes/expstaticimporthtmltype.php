@@ -195,8 +195,9 @@ abstract class expStaticImportHtmlType implements expStaticImportTypeInterface
                 break;
             }
         }
-        $page['class'] = $class;
-        $page['parent_path'] = $this->parentPath( $page['path'] );
+        // a page a type built itself (a comment of a page) may come with its class and parent
+        $page['class'] = !empty( $page['class_fixed'] ) ? (string)$page['class_fixed'] : $class;
+        $page['parent_path'] = array_key_exists( 'parent_fixed', $page ) ? (string)$page['parent_fixed'] : $this->parentPath( $page['path'] );
         $page['priority'] = isset( $page['priority'] ) ? (int)$page['priority'] : 0;
 
         $fields = $this->fields( $page );
