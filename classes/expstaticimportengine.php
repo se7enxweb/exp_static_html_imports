@@ -878,9 +878,14 @@ class expStaticImportEngine
             return $child->attribute( 'class_identifier' ) . "\0name\0" . mb_strtolower( (string)$child->attribute( 'name' ), 'UTF-8' );
         };
         $have = array();
-        foreach ( $keepNode->children() as $child )
+        // hidden children too (a hidden mirror's pages): children() leaves them out where hidden nodes are not shown
+        $allChildren = function ( eZContentObjectTreeNode $parent ) {
+            $list = eZContentObjectTreeNode::subTreeByNodeID( array( 'Depth' => 1, 'DepthOperator' => 'eq', 'IgnoreVisibility' => true, 'Limitation' => array() ), (int)$parent->attribute( 'node_id' ) );
+            return is_array( $list ) ? $list : array();
+        };
+        foreach ( $allChildren( $keepNode ) as $child )
             $have[$key( $child )] = true;
-        foreach ( $node->children() as $child )
+        foreach ( $allChildren( $node ) as $child )
         {
             if ( isset( $have[$key( $child )] ) )
             {
@@ -1144,7 +1149,9 @@ class expStaticImportEngine
     {
         $managed = array();
         foreach ( $this->state->data['pages'] as $path => $entry )
-            if ( !empty( $entry['node_id'] ) && ( !isset( $entry['status'] ) || !in_array( $entry['status'], array( 'removed', 'duplicate', 'failed' ), true ) ) && strpos( (string)$path, '#' ) === false )
+            // a page of the state that is no page of the source today (excluded since) is a leftover too
+            if ( !empty( $entry['node_id'] ) && ( !isset( $entry['status'] ) || !in_array( $entry['status'], array( 'removed', 'duplicate', 'failed' ), true ) ) && strpos( (string)$path, '#' ) === false
+                 && ( $this->isRootPage( (string)$path ) || !method_exists( $this->type, 'isKnown' ) || $this->type->isKnown( (string)$path ) ) )
                 $managed[(int)$entry['node_id']] = true;
         foreach ( $containerNodes as $nodeID )
             $managed[(int)$nodeID] = true;
