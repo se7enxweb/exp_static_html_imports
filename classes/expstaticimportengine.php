@@ -1400,6 +1400,9 @@ class expStaticImportEngine
         $this->options['pull'] = false;
         $this->source = $this->prepareSource();
         $this->loadStatePatches();
+        // removing nodes needs the import's user: as anonymous the kernel skips each removal without a word
+        if ( $trashReplaced )
+            $this->actAs();
         $paths = $this->type->discover( $this->source );
         if ( method_exists( $this->type, 'setKnownPaths' ) )
             $this->type->setKnownPaths( $paths );
@@ -1511,8 +1514,16 @@ class expStaticImportEngine
                 if ( $trashReplaced && !$missing && !$live )
                 {
                     eZContentObjectTreeNode::removeSubtrees( array( (int)$node->attribute( 'node_id' ) ), true );
-                    $out['trashed']++;
-                    $this->audit( 'system.staticimport_page.trash_replaced', array( 'path' => $path, 'object' => $oldID ) );
+                    // counted only when it really went (the kernel refuses a removal without a word)
+                    eZContentObject::clearCache( array( $oldID ) );
+                    $gone = eZContentObject::fetch( $oldID );
+                    if ( !$gone instanceof eZContentObject || (int)$gone->attribute( 'status' ) !== eZContentObject::STATUS_PUBLISHED )
+                    {
+                        $out['trashed']++;
+                        $this->audit( 'system.staticimport_page.trash_replaced', array( 'path' => $path, 'object' => $oldID ) );
+                    }
+                    else
+                        $out['replaced_left']++;
                 }
                 else
                     $out['replaced_left']++;
