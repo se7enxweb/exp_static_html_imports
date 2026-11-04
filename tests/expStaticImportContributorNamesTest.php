@@ -113,4 +113,55 @@ class expStaticImportContributorNamesTest extends \PHPUnit\Framework\TestCase
         $this->assertSame( array(), $r['failures'] );
         $this->assertSame( array( 'Graham Brookins', 'Geir Arne Waaler' ), expStaticImportByline::people( $r['fields'] ) );
     }
+
+    /** the four texts the documentation's earlier imports made contributors of */
+    const JUNK = array( ': {{ ez_field_value( content', 'hand with one version per supported database', 're: change a package',
+                        'eZ in collaboration with a global user base. The software is based on open standards' );
+
+    public function testCodeSentencesAndSubjectsAreNoNames()
+    {
+        foreach ( self::JUNK as $text )
+            $this->assertFalse( expStaticImportByline::isName( $text ), $text );
+        foreach ( array( '{{ author }}', '<b>Ann</b>', '$author', 'a = b', 'Fw: hello', 'ez_field_value( content', ': Ann' ) as $text )
+            $this->assertFalse( expStaticImportByline::isName( $text ), $text );
+        // the comment's own subject in its author field
+        $this->assertFalse( expStaticImportByline::isName( 'change a package', 'Re: change a package' ) );
+        $this->assertTrue( expStaticImportByline::isName( 'Harry van Irsel', 'change a package' ) );
+    }
+
+    public function testRealNamesStayNames()
+    {
+        foreach ( array( 'Graham Brookins', 'André R.', 'Łukasz Serwatka', '//kracker', 'Unknown User (toby.schlitt)', 'Xc(Xiongjie Chen)',
+                         'Mark Simon (all2e gmbH)', 'vera lucia alves capistrano', 'admin informazzurro.it', 'jcp.bellagio', 'José María de la Fuente',
+                         'Paul (eZ)', 'Yannick\'s', 'xuefeng_lee', 'andre1', 'Brookins Consulting' ) as $name )
+            $this->assertTrue( expStaticImportByline::isName( $name ), $name );
+    }
+
+    public function testNoParserPathMakesAPersonOfThem()
+    {
+        $b = new expStaticImportByline( new expStaticImportRules( 'test', array(
+            'BylineSelectors' => array( '.pageinfo' ),
+            'BylineFields' => array( 'written' => 'Written by', 'updated' => 'Last updated by', 'maintainers' => 'Maintainers' ),
+            'BylineListFields' => array( 'maintainers' ),
+            'BylineDateFormats' => array( 'd/m/Y g:i a', 'M d, Y' ),
+            'BylineTimezone' => 'Europe/Oslo',
+            'BylineSentenceSelectors' => array( 'li.page-metadata-modification-info', 'p.text' ),
+            'BylineSentences' => array( '/^Created by (?<written>.+?) (?:on )?(?<written_at>[A-Z][a-z]{2} \d{1,2}, \d{4})$/u',
+                                        '/created by (?<written>.+?), as this/u' ),
+            'BylineCommentAuthorSelectors' => array( '#comments-content p.author' ),
+        ) ) );
+        // a labelled line, a sentence rule that matches the body text, and an author field holding the reply's subject
+        $doc = expStaticImportDom::load( '<html><body><div id="b"><p class="text">The SQL statements should never be created by hand with one '
+            . 'version per supported database, as this increases the load</p><div class="pageinfo"><p><label>Written by:</label>: {{ ez_field_value( content</p>'
+            . '<p><label>Maintainers:</label>Ann Example, hand with one version per supported database</p></div></div>'
+            . '<div id="comments-content"><ul><li><div class="class-comment"><h2>change a package</h2><p class="author">Harry van Irsel</p></div>'
+            . '<ul><li><div class="class-comment"><h2>Re: change a package</h2><p class="author">re: change a package</p></div></li></ul></li></ul></div>'
+            . '</body></html>' );
+        $r = $b->extract( $doc, $doc->getElementById( 'b' ) );
+        $people = expStaticImportByline::people( $r['fields'] );
+        $this->assertSame( array( 'Harry van Irsel' ), $people );
+        // nothing of the source is lost: what is no name is listed for review
+        $this->assertCount( 3, $r['failures'] );
+        $this->assertNull( $b->parseLine( 'Written by', 'hand with one version per supported database (14/09/2010 10:22 am)' ) );
+    }
 }

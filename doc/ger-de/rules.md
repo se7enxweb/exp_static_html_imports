@@ -134,6 +134,11 @@ Ordners. Manche Exporte sind jedoch flach: Confluence speichert jede Seite eines
   vorrangig). Varianten werden ohne Groß- und Kleinschreibung, Punkte und überzählige Leerzeichen verglichen
   (`Map[graham b]=Graham Brookins` deckt „Graham B.“ ab). Der `author_name` eines Kommentars bleibt wie geschrieben;
   nur seine Relation zeigt auf die Person.
+- Ein Text, der kein Name ist, wird nie eine mitwirkende Person, gleich welche Regel ihn liest: Code („{{
+  ez_field_value( content“), ein Satzstück („hand with one version per supported database“) oder der Betreff einer
+  Antwort, den die alte Website ins Autorenfeld eines Kommentars schrieb („re: change a package“). Eine Zeile oder ein
+  Satz mit einem solchen Text wird als Fehler gemeldet; der Kommentar behält den Text als Autorennamen und verweist auf
+  niemanden.
 - Das Feld `contributors` enthält jede Person jedes Felds der Autorenzeile, jede einmal (Namen ohne Groß- und
   Kleinschreibung und überzählige Leerzeichen verglichen): einer Objektbeziehungsliste zuordnen, z. B.
   `AttributeMap[*/contributors]=contributors`.

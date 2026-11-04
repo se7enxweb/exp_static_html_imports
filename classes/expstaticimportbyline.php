@@ -129,8 +129,10 @@ class expStaticImportByline
                     if ( isset( $values['updated'] ) && $values['updated']['name'] === '' && isset( $values['written'] ) )
                         $values['updated']['name'] = $values['written']['name'];
                     $ok = (bool)$values;
+                    // a group that matched code or a piece of the text ("created by hand with one version per ...")
+                    // is no person: the sentence is not read
                     foreach ( $values as $value )
-                        if ( $value['name'] === '' )
+                        if ( $value['name'] === '' || !self::isName( $value['name'] ) )
                             $ok = false;
                     // a date group that matched text but no date format is a sentence not read
                     foreach ( array( 'written_at', 'updated_at' ) as $group )
@@ -164,7 +166,11 @@ class expStaticImportByline
             {
                 // a name as written, never with the character references of a twice-encoded source (Kara&#347;)
                 $name = $this->canonicalName( $element->textContent );
-                if ( $name !== '' && !isset( $names[self::normalizeName( $name )] ) )
+                // the old site wrote a reply's subject in the author field when it had no author ("re: change a
+                // package"): no person (the comment keeps the text as its author name)
+                if ( $name === '' || !self::isName( $name, self::commentSubject( $element ) ) )
+                    continue;
+                if ( !isset( $names[self::normalizeName( $name )] ) )
                     $names[self::normalizeName( $name )] = $name;
             }
         if ( $names )
@@ -245,6 +251,10 @@ class expStaticImportByline
         if ( in_array( $field, $this->rules->getList( 'BylineListFields' ), true ) )
         {
             $names = array_values( array_filter( array_map( array( $this, 'canonicalName' ), explode( ',', $value ) ), 'strlen' ) );
+            // one entry that is no name makes the line a failure for review, so nothing of it is lost
+            foreach ( $names as $name )
+                if ( !self::isName( $name ) )
+                    return null;
             return $names ? array( 'field' => $field, 'value' => array( 'names' => $names ) ) : null;
         }
         $time = null;
@@ -269,7 +279,8 @@ class expStaticImportByline
             }
         }
         $name = $this->canonicalName( $value );
-        if ( $name === '' )
+        // code or a piece of a sentence is no person: the line is a failure for review
+        if ( $name === '' || !self::isName( $name ) )
             return null;
         return array( 'field' => $field, 'value' => array( 'name' => $name, 'time' => $time ) );
     }
@@ -349,6 +360,64 @@ class expStaticImportByline
         $aliases = $this->aliases();
         $key = self::aliasKey( $name );
         return isset( $aliases[$key] ) ? $aliases[$key] : $name;
+    }
+
+    /** words of a sentence, never of a person's name (a name may hold one of them: "Mark of Lyon"; a sentence holds more) */
+    const SENTENCE_WORDS = array( 'a', 'an', 'and', 'are', 'as', 'based', 'be', 'by', 'can', 'for', 'from', 'has', 'have', 'in', 'is', 'it',
+                                  'of', 'on', 'one', 'or', 'per', 'should', 'that', 'the', 'this', 'to', 'was', 'when', 'which', 'will', 'with', 'you' );
+
+    /**
+     * Whether a text can be a person's name. Never one: template or program code ("{{ ez_field_value( content",
+     * "<b>", "$a = 1;"), a text without a letter or that starts like the rest of a clause (": ..."), a reply's subject that the old
+     * site wrote in a comment's author field ("re: change a package", or the comment's own subject), and a piece of a
+     * sentence ("hand with one version per supported database", "eZ in collaboration with a global user base. The
+     * software ..."): more than six words, two words of SENTENCE_WORDS, or a full stop between words.
+     *
+     * @param string $text
+     * @param string $subject the subject of the comment the text is the author of, if any
+     * @return bool
+     */
+    public static function isName( $text, $subject = '' )
+    {
+        $text = trim( preg_replace( '/\s+/u', ' ', str_replace( "\xc2\xa0", ' ', (string)$text ) ) );
+        // a letter somewhere (a handle may start otherwise: "//kracker", "@ann"), never the rest of a clause (": ...")
+        if ( $text === '' || !preg_match( '/\p{L}/u', $text ) || preg_match( '/^[:,;.!?)\]}]/u', $text ) )
+            return false;
+        // code: braces, angle brackets, assignments, statements, variables, pipes, backslashes, backticks, a call left open
+        if ( preg_match( '/[{}<>=;$\\\\|`]|\(\s*[\w.]*\s*$/u', $text ) )
+            return false;
+        if ( preg_match( '/^(re|fw|fwd|aw|sv|antw)\s*:/iu', $text ) )
+            return false;
+        $subject = trim( preg_replace( '/^(re|fw|fwd|aw|sv|antw)\s*:\s*/iu', '', trim( (string)$subject ) ) );
+        if ( $subject !== '' && self::normalizeName( $text ) === self::normalizeName( $subject ) )
+            return false;
+        $words = explode( ' ', $text );
+        if ( count( $words ) > 6 )
+            return false;
+        if ( preg_match( '/\p{Ll}{2,}\.\s+\p{L}{2,}/u', $text ) )
+            return false;
+        $sentence = 0;
+        foreach ( $words as $word )
+            if ( in_array( mb_strtolower( trim( $word, '.,;:!?' ), 'UTF-8' ), self::SENTENCE_WORDS, true ) )
+                $sentence++;
+        return $sentence < 2;
+    }
+
+    /**
+     * @param DOMNode $author the author element of a comment
+     * @return string the subject (the first heading) of the comment it belongs to, '' when none is found
+     */
+    protected static function commentSubject( DOMNode $author )
+    {
+        for ( $node = $author->parentNode, $depth = 0; $node instanceof DOMElement && $depth < 6; $node = $node->parentNode, $depth++ )
+        {
+            if ( !preg_match( '/\bcomment\b|\bclass-comment\b/', (string)$node->getAttribute( 'class' ) ) && $node->nodeName !== 'li' )
+                continue;
+            foreach ( array( 'h1', 'h2', 'h3', 'h4' ) as $tag )
+                if ( ( $heading = $node->getElementsByTagName( $tag )->item( 0 ) ) && !$heading->getAttribute( 'class' ) )
+                    return trim( $heading->textContent );
+        }
+        return '';
     }
 
     /**

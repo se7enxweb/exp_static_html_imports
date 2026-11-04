@@ -1407,7 +1407,8 @@ class expStaticImportEngine
                             $missing[] = "comment $id: the subject differs";
                         if ( $field === 'author_name' && (string)( isset( $comment['meta']['author'] ) ? $comment['meta']['author'] : '' ) !== trim( $text ) )
                             $missing[] = "comment $id: " . ( trim( $text ) === '' ? 'no author name' : 'the author name differs' );
-                        if ( $field === 'written_by' && !empty( $comment['meta']['author'] ) && !(int)$attribute->attribute( 'data_int' ) )
+                        if ( $field === 'written_by' && !empty( $comment['meta']['author'] ) && expStaticImportByline::isName( $comment['meta']['author'], (string)$comment['title'] )
+                             && !(int)$attribute->attribute( 'data_int' ) )
                             $missing[] = "comment $id: no author";
                         if ( ( $field === 'written_at' || $field === 'modified' ) && !empty( $comment['meta']['modified'] ) && (int)$attribute->attribute( 'data_int' ) !== (int)$comment['meta']['modified'] )
                             $missing[] = "comment $id: " . ( (int)$attribute->attribute( 'data_int' ) ? 'the date differs' : 'no date' );
@@ -2023,6 +2024,12 @@ class expStaticImportEngine
         $key = expStaticImportByline::normalizeName( $name );
         if ( $class === '' || $key === '' )
             return 0;
+        // code or a piece of a sentence never becomes a contributor, whatever rule read it
+        if ( !expStaticImportByline::isName( $name ) )
+        {
+            $this->report['warnings'][] = "'" . mb_substr( $name, 0, 80 ) . "' is no person's name, no contributor was made";
+            return 0;
+        }
         if ( isset( $this->state->data['contributors'][$key] ) && eZContentObject::exists( (int)$this->state->data['contributors'][$key] ) )
             return (int)$this->state->data['contributors'][$key];
         $remoteID = 'staticimport-contributor-' . md5( $key );

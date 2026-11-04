@@ -70,6 +70,10 @@ breadcrumb says where a page belongs.
   statichtmlimport.ini (all types), or `ContributorAliases[<variant>]=<name>` in a type's group (it wins). Variants
   match without case, dots and extra spaces (`Map[graham b]=Graham Brookins` covers "Graham B."). A comment's
   `author_name` stays as written; only its relation goes to the person.
+- A text that is no name never becomes a contributor, whatever rule read it: code ("{{ ez_field_value( content"), a
+  piece of a sentence ("hand with one version per supported database"), or a reply's subject the old site wrote in a
+  comment's author field ("re: change a package"). A byline line or sentence with one is listed as a failure; the
+  comment keeps the text as its author name and relates to nobody.
 - The field `contributors` holds every person of every byline field, each once (names compared without case and extra
   spaces): map it to an object relation list, e.g. `AttributeMap[*/contributors]=contributors`.
 - Byline text that no rule reads is reported per page (`byline_failures`), never dropped.

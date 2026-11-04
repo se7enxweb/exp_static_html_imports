@@ -248,7 +248,9 @@ class expStaticImportTypeDocHtml extends expStaticImportHtmlType
             'meta' => array( 'author' => $author, 'modified' => $time ?: null, 'labels' => array(), 'comment_id' => (string)$id,
                              'parent_comment_id' => $parentID, 'source_url' => $commentPath ),
             // the author and time are the comment's byline: a relation to the contributor, and its date
-            'bylines' => $author !== '' ? array( 'written' => array( 'name' => $author, 'time' => $time ?: null ) ) : array(),
+            // (an author field that holds the reply's subject, "re: change a package", is no person: the comment keeps
+            // the text as its author name and relates to nobody)
+            'bylines' => $author !== '' && expStaticImportByline::isName( $author, $title ) ? array( 'written' => array( 'name' => $author, 'time' => $time ?: null ) ) : array(),
             'byline_failures' => array(),
             'hidden' => false,
             'aliases' => array(),
