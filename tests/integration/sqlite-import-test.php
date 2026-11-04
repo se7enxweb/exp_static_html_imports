@@ -116,13 +116,6 @@ $rules = array(
     'AssetClassRules' => array( '**;' . ( eZContentClass::fetchByIdentifier( 'exp_doc_image' ) ? 'exp_doc_image' : 'image' ) ),
     'AssetAttributeMap' => array( 'exp_doc_image/name' => 'title', 'exp_doc_image/image' => 'file', 'exp_doc_image/alt' => 'alt',
                                   'image/name' => 'title', 'image/image' => 'file' ),
-    'BylineDateFormats' => array( 'M d, Y H:i', 'M d, Y' ), 'BylineTimezone' => 'Europe/Oslo',
-    'BylineSentenceSelectors' => array( '.page-metadata-modification-info' ),
-    'BylineSentences' => array( '/^Created and last modified by (?<written>.+?) on (?<updated_at>.+)$/u',
-                                '/^Created by (?<written>.+?), last modified by (?<updated>.+?) on (?<updated_at>.+)$/u',
-                                '/^Created by (?<written>.+?), last modified on (?<updated_at>.+)$/u',
-                                '/^Created by (?<written>.+?) on (?<written_at>.+)$/u' ),
-    'BylineCommentAuthorSelectors' => array( '.comment-header .author' ),
     'ContributorClass' => eZContentClass::fetchByIdentifier( 'exp_doc_contributor' ) ? 'exp_doc_contributor' : '',
     'ContributorParentNode' => (string)$topNode,
     'DefaultClass' => $class,
@@ -131,6 +124,7 @@ $rules = array(
                              '*/contributors' => 'contributors', 'folder/name' => 'title' ),
     'CreateRedirects' => 'enabled', 'DeferViewCacheClearing' => 'disabled',
 );
+$rules += require __DIR__ . '/../fixtures/confluence-byline-rules.php';
 $ini->setVariables( array( 'Type_' . $label => $rules ) );
 
 // 3. the runs

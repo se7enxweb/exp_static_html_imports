@@ -29,19 +29,9 @@ class expStaticImportBylineSentencesTest extends \PHPUnit\Framework\TestCase
     {
         $this->source = __DIR__ . '/fixtures/flat-site';
         $this->type = new expStaticImportTypeDocHtml();
-        $this->type->configure( new expStaticImportRules( 'doc-html', array(
+        $this->type->configure( new expStaticImportRules( 'doc-html', ( require __DIR__ . '/fixtures/confluence-byline-rules.php' ) + array(
             'TitleSelector' => '#title-text, h1',
             'BodySelector' => '#main-content, body',
-            'BylineDateFormats' => array( 'M d, Y H:i', 'M d, Y' ),
-            'BylineTimezone' => 'Europe/Oslo',
-            'BylineSentenceSelectors' => array( '.page-metadata-modification-info' ),
-            'BylineSentences' => array(
-                '/^Created and last modified by (?<written>.+?) on (?<updated_at>.+)$/u',
-                '/^Created by (?<written>.+?), last modified by (?<updated>.+?) on (?<updated_at>.+)$/u',
-                '/^Created by (?<written>.+?), last modified on (?<updated_at>.+)$/u',
-                '/^Created by (?<written>.+?) on (?<written_at>.+)$/u',
-            ),
-            'BylineCommentAuthorSelectors' => array( '.comment-header .author' ),
             'DefaultClass' => 'exp_doc_page',
             'AttributeMap' => array( '*/title' => 'title', '*/written_by' => 'written_by', '*/written_at' => 'written_at',
                                      '*/last_updated_by' => 'last_updated_by', '*/last_updated_at' => 'last_updated_at',
@@ -90,6 +80,15 @@ class expStaticImportBylineSentencesTest extends \PHPUnit\Framework\TestCase
         $this->assertSame( 'Unknown User (kore.nordmann)', $page['bylines']['written']['name'] );
         $this->assertSame( (string)$this->time( 'May 24, 2016' ), $page['attributes']['written_at'] );
         $this->assertArrayNotHasKey( 'updated', $page['bylines'] );
+    }
+
+    public function testARelativeDateCountsFromTheDayThePageWasSaved()
+    {
+        // saved Tue, 21 Oct 2014 08:54:32 GMT: "yesterday at 7:42 PM" is Oct 20, 2014 19:42 in the source's timezone
+        $page = $this->type->parse( $this->source, 'display/SPC/Byline-relative.html' );
+        $this->assertSame( 'Bob Editor', $page['bylines']['updated']['name'] );
+        $this->assertSame( $this->time( 'Oct 20, 2014 19:42' ), $page['bylines']['updated']['time'] );
+        $this->assertSame( array(), $page['byline_failures'] );
     }
 
     public function testAnUnknownVariantIsListedNeverDropped()

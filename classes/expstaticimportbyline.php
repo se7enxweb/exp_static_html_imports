@@ -43,9 +43,23 @@ class expStaticImportByline
      * @param DOMElement $body
      * @return array( 'fields' => array, 'failures' => array of the lines that could not be read )
      */
+    /** @var int|null when the page was saved (BylineSavedAtPattern), the day relative dates count from */
+    protected $savedAt = null;
+
     public function extract( DOMDocument $doc, DOMElement $body )
     {
         $result = array( 'fields' => array(), 'failures' => array() );
+        // BylineSavedAtPattern: a regular expression on the page's HTML comments whose first group is the date the
+        // page was saved (an HTTrack mirror: "Mirrored from ... by HTTrack Website Copier/3.x [...], Tue, 21 Oct 2014
+        // 08:54:32 GMT"), so "yesterday at 7:42 PM" has a day
+        $this->savedAt = null;
+        if ( ( $pattern = (string)$this->rules->get( 'BylineSavedAtPattern', '' ) ) !== '' )
+            foreach ( ( new DOMXPath( $doc ) )->query( '//comment()' ) as $comment )
+                if ( @preg_match( $pattern, $comment->nodeValue, $m ) && isset( $m[1] ) && ( $time = strtotime( $m[1] ) ) )
+                {
+                    $this->savedAt = $time;
+                    break;
+                }
         $labels = $this->rules->getHash( 'BylineFields' );
         foreach ( $labels ? $this->rules->getList( 'BylineSelectors' ) : array() as $selector )
             foreach ( iterator_to_array( expStaticImportDom::query( $doc, $selector, $body ) ) as $container )
@@ -254,6 +268,16 @@ class expStaticImportByline
     {
         $text = trim( $text );
         $zone = new DateTimeZone( (string)$this->rules->get( 'BylineTimezone', 'UTC' ) );
+        // a relative date ("yesterday at 7:42 PM", "today at 9:01 AM") counts from the day the page was saved
+        if ( $this->savedAt && preg_match( '/^(yesterday|today) at (\d{1,2}:\d{2}\s*[ap]m)$/i', $text, $m ) )
+        {
+            $day = ( new DateTime( '@' . $this->savedAt ) )->setTimezone( $zone );
+            if ( strtolower( $m[1] ) === 'yesterday' )
+                $day->modify( '-1 day' );
+            $date = DateTime::createFromFormat( '!Y-m-d g:i a', $day->format( 'Y-m-d' ) . ' ' . strtolower( preg_replace( '/\s+/', ' ', $m[2] ) ), $zone )
+                 ?: DateTime::createFromFormat( '!Y-m-d g:ia', $day->format( 'Y-m-d' ) . ' ' . strtolower( preg_replace( '/\s+/', '', $m[2] ) ), $zone );
+            return $date ? $date->getTimestamp() : null;
+        }
         foreach ( $this->rules->getList( 'BylineDateFormats' ) ?: array( 'd/m/Y g:i a' ) as $format )
         {
             $date = DateTime::createFromFormat( '!' . $format, $text, $zone );
