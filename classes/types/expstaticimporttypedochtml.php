@@ -123,7 +123,7 @@ class expStaticImportTypeDocHtml extends expStaticImportHtmlType
                           'hidden' => false, 'aliases' => array(), 'redirect_to' => $target !== null ? $target : '' );
         }
         $page = parent::parse( $source, $path );
-        if ( $page === null || isset( $page['asset_of'] ) )
+        if ( $page === null || isset( $page['asset_of'] ) || isset( $page['redirect_to'] ) )
             return $page;
         $meta = $page['meta'];
         // the bylines (the documentation site's byline box, Confluence's byline sentence, the comment authors) are read

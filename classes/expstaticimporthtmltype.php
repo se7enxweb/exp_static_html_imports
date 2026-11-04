@@ -478,10 +478,39 @@ abstract class expStaticImportHtmlType implements expStaticImportTypeInterface
         return array( $target, $alt );
     }
 
+    /**
+     * CopyOfPatterns[]: regular expressions on the path whose first group is the address of the page it copies (e.g.
+     * "#^(.*)/\([a-z_]+\)/[^/]+\.html$#" for ".../(language)/eng-GB.html"). The page of that address is its .html, its
+     * index file, its group page, or the page its folder belongs to (the folder page of a renamed version folder).
+     *
+     * @param string $path
+     * @return string the page it copies, '' for none
+     */
+    public function copyOf( $path )
+    {
+        foreach ( $this->rules->getList( 'CopyOfPatterns' ) as $pattern )
+        {
+            if ( !@preg_match( $pattern, $path, $m ) || !isset( $m[1] ) )
+                continue;
+            $address = trim( $m[1], '/' );
+            $page = $address === '' ? '' : $this->pageOfAddress( $address );
+            if ( $page !== '' && isset( $this->known[$page] ) && $page !== $path )
+                return $page;
+            $parent = $this->parentPath( $address . '/' . basename( $path ) );
+            return $parent !== $path ? $parent : '';
+        }
+        return '';
+    }
+
     public function parse( $source, $path )
     {
         if ( isset( $this->groups[$path] ) )
             return $this->groupPage( $path );
+        // CopyOfPatterns[]: a copy of a page under another address (a view parameter such as "(language)/eng-GB"),
+        // whatever its content, is a redirect to that page, never a page of its own
+        if ( ( $canonical = $this->copyOf( $path ) ) !== '' )
+            return array( 'path' => $path, 'title' => '', 'body_html' => '', 'original_html' => '', 'meta' => array(),
+                          'hidden' => false, 'aliases' => array(), 'redirect_to' => $canonical );
         $file = rtrim( $source, '/' ) . '/' . $path;
         $html = @file_get_contents( $file );
         if ( $html === false )

@@ -34,6 +34,7 @@ class expStaticImportDocHtmlFixtureTest extends \PHPUnit\Framework\TestCase
             'TitleSelector' => '.attribute-heading h1, h1',
             'BodySelector' => '.area-docmain-normal .content-view-full, body',
             'FolderPagePatterns' => array( 'Manual/[0-9]*.html' ),
+            'CopyOfPatterns' => array( '#^(.*)/\(language\)/[^/]+\.html$#' ),
             'GenericTitles' => array( 'Table of contents' ),
             'NotFoundTitlePatterns' => array( '/^404\b/' ),
             'BylineSelectors' => array( '.pageinfo' ),
@@ -120,5 +121,12 @@ class expStaticImportDocHtmlFixtureTest extends \PHPUnit\Framework\TestCase
         $stub = $this->type->parse( $this->source, 'moved.html' );
         $this->assertSame( 'Manual.html', $stub['redirect_to'] );
         $this->assertNull( $this->type->parse( $this->source, 'missing.html' ) );
+    }
+
+    public function testAViewParameterCopyRedirectsToThePageOfItsFolder()
+    {
+        // Manual/1.0/(language)/eng-GB.html copies the page of the folder 1.0, which is the renamed version page
+        $copy = $this->type->parse( $this->source, 'Manual/1.0/(language)/eng-GB.html' );
+        $this->assertSame( 'Manual/1-0.html', $copy['redirect_to'] );
     }
 }

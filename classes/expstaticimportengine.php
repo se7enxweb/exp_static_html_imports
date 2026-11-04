@@ -297,9 +297,9 @@ class expStaticImportEngine
                 {
                     continue;
                 }
-            if ( is_array( $page ) && !isset( $page['asset_of'] ) )
+            if ( is_array( $page ) && !isset( $page['asset_of'] ) && empty( $page['redirect_to'] ) )
                 continue;
-            $why = $page === false ? 'left out by the rules' : ( $page === null ? 'no page' : 'the viewer of ' . $page['asset_of'] );
+            $why = $page === false ? 'left out by the rules' : ( $page === null ? 'no page' : ( !empty( $page['redirect_to'] ) ? 'a copy of ' . $page['redirect_to'] : 'the viewer of ' . $page['asset_of'] ) );
             $node = eZContentObjectTreeNode::fetch( (int)$entry['node_id'] );
             if ( !$node instanceof eZContentObjectTreeNode )
                 continue;
