@@ -71,6 +71,9 @@ abstract class expStaticImportHtmlType implements expStaticImportTypeInterface
     /** @var array path => array( 'container' => ..., 'name' => ..., 'meta' => array, 'current' => page id ) */
     protected $routes = array();
 
+    /** @var string the source folder of the last discover() */
+    protected $sourceDir = '';
+
     /** @var array page id => the path of the current page with that id (pages whose breadcrumb is read) */
     protected $pageIdPaths = array();
 
@@ -139,6 +142,7 @@ abstract class expStaticImportHtmlType implements expStaticImportTypeInterface
     protected function readStructure( $source, array $paths )
     {
         $this->breadcrumbParents = $this->groups = array();
+        $this->sourceDir = rtrim( $source, '/' );
         $selector = trim( (string)$this->rules->get( 'BreadcrumbSelector', '' ) );
         $crumbPaths = $this->rules->getList( 'BreadcrumbPaths' );
         $groupFolders = $this->rules->getList( 'GroupFolders' );
@@ -379,6 +383,15 @@ abstract class expStaticImportHtmlType implements expStaticImportTypeInterface
 
     /**
      * @param string $path
+     * @return bool whether the path is a page of the source (or a group page) as the last discover() found it
+     */
+    public function isKnown( $path )
+    {
+        return isset( $this->known[$path] );
+    }
+
+    /**
+     * @param string $path
      * @return bool whether the path is a group page (GroupFolders[])
      */
     public function isGroup( $path )
@@ -407,6 +420,23 @@ abstract class expStaticImportHtmlType implements expStaticImportTypeInterface
             'bylines' => array(),
             'byline_failures' => array(),
         );
+        // GroupBodyFrom[<folder>]=<source page>: the group's text is that page's body (the landing page of a section,
+        // e.g. the Confluence documentation center's start page for the section of all spaces)
+        $from = $this->rules->getHash( 'GroupBodyFrom' );
+        $folder = rtrim( $path, '/' );
+        if ( isset( $from[$folder] ) && $this->sourceDir !== '' && is_file( $this->sourceDir . '/' . $from[$folder] ) )
+        {
+            $groups = $this->groups;
+            unset( $this->groups[$from[$folder]] );
+            $source = $this->parse( $this->sourceDir, (string)$from[$folder] );
+            $this->groups = $groups;
+            if ( is_array( $source ) && isset( $source['body_html'] ) && empty( $source['redirect_to'] ) && empty( $source['asset_of'] ) )
+            {
+                $page['body_html'] = $source['body_html'];
+                $page['original_html'] = isset( $source['original_html'] ) ? $source['original_html'] : '';
+                $page['meta']['description'] = isset( $source['meta']['description'] ) ? $source['meta']['description'] : '';
+            }
+        }
         $class = isset( $this->groupClasses[$path] ) ? $this->groupClasses[$path] : trim( (string)$this->rules->get( 'GroupClass', '' ) );
         if ( $class !== '' )
             $page['class_fixed'] = $class;
@@ -756,9 +786,28 @@ abstract class expStaticImportHtmlType implements expStaticImportTypeInterface
     {
         if ( isset( $this->routes[$path] ) )
             return $this->routes[$path]['container'];
-        if ( isset( $this->breadcrumbParents[$path] ) )
-            return $this->breadcrumbParents[$path];
-        return $this->folderParent( $path );
+        $parent = isset( $this->breadcrumbParents[$path] ) ? $this->breadcrumbParents[$path] : $this->folderParent( $path );
+        return $parent === '' ? $this->topParent( $path ) : $parent;
+    }
+
+    /**
+     * TopParentRules[]=<shell pattern>;<parent path>: where a page goes that would be a top page (no folder page, no
+     * breadcrumb). The first rule that matches wins; an empty parent keeps the page at the top. With a last rule
+     * "**;<page>" nothing but the pages named before it stays at the top, so the top node keeps few children.
+     *
+     * @param string $path
+     * @return string
+     */
+    protected function topParent( $path )
+    {
+        foreach ( $this->rules->getList( 'TopParentRules' ) as $rule )
+        {
+            list( $pattern, $parent ) = array_pad( array_map( 'trim', explode( ';', $rule, 2 ) ), 2, '' );
+            if ( $pattern === '' || !self::matches( $path, $pattern ) )
+                continue;
+            return $parent !== '' && $parent !== $path && isset( $this->known[$parent] ) ? $parent : '';
+        }
+        return '';
     }
 
     /**

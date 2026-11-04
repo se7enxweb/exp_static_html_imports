@@ -22,11 +22,13 @@ class Route extends \Exponential\Runnable\Command
                 . "The state file is never written (a state patch tells the next run), so it is safe while a run is going on.\n"
                 . "Running it again changes only what is still out of place.\n\n"
                 . "  --type=<label>   the import type (e.g. doc-html)\n"
+                . "  --all            every imported page below the parent the rules give it today (paths, breadcrumbs,\n"
+                . "                   TopParentRules[]), every group page made, and same-name siblings renamed\n"
                 . "  --dry-run        count, change nothing\n"
                 . "  --format=json    as JSON",
             'use-session' => false, 'use-modules' => true, 'use-extensions' => true
         ) );
-        $options = $this->startup( '[type:][dry-run][format:]', '', array( 'type' => 'The import type', 'dry-run' => 'Change nothing', 'format' => 'text or json' ) );
+        $options = $this->startup( '[type:][dry-run][all][format:]', '', array( 'type' => 'The import type', 'dry-run' => 'Change nothing', 'all' => 'Every page where the rules put it', 'format' => 'text or json' ) );
         $type = !empty( $options['type'] ) ? ltrim( (string)$options['type'], '-' ) : '';
         if ( $type === '' )
         {
@@ -35,15 +37,15 @@ class Route extends \Exponential\Runnable\Command
             return 2;
         }
         $engine = new \expStaticImportEngine( $type, array( 'pull' => false ) );
-        $result = $engine->applyRoutes( !empty( $options['dry-run'] ) );
+        $result = $engine->applyRoutes( !empty( $options['dry-run'] ), !empty( $options['all'] ) );
         if ( isset( $options['format'] ) && $options['format'] === 'json' )
             $this->output( json_encode( array( 'schema' => \expStaticImportEngine::SCHEMA, 'ok' => true, 'type' => $type ) + $result, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE ) );
         else
         {
             foreach ( $result['families'] as $family => $count )
                 $this->output( sprintf( '  %6d  %s', $count, $family ) );
-            $this->output( sprintf( 'PASS %d containers (%d new), %d routed pages imported (%d not yet), %d moved, %d renamed, %d shown again, %d relations; the root had %d children, now %d',
-                                    $result['containers'], $result['containers_created'], $result['routed'], $result['not_imported'], $result['moved'], $result['renamed'],
+            $this->output( sprintf( 'PASS %d containers (%d new), %d routed pages imported (%d not yet), %d other pages checked, %d moved, %d renamed, %d shown again, %d relations; the root had %d children, now %d',
+                                    $result['containers'], $result['containers_created'], $result['routed'], $result['not_imported'], isset( $result['pages'] ) ? $result['pages'] : 0, $result['moved'], $result['renamed'],
                                     $result['shown'], $result['related'], $result['root_children_before'], $result['root_children_after'] ) );
         }
         $this->shutdown( 0 );

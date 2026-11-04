@@ -135,4 +135,20 @@ class expStaticImportTreeRulesTest extends \PHPUnit\Framework\TestCase
         $this->assertArrayNotHasKey( 'https://elsewhere.example/x.html', $links );
         $this->assertSame( 'Manual/storage/screen.png', $links['storage/screen.png'] );
     }
+
+    public function testTopParentRulesKeepTheTopSmall()
+    {
+        $type = new expStaticImportTypeDocHtml();
+        $type->configure( new expStaticImportRules( 'doc-html', array(
+            'BreadcrumbSelector' => '#breadcrumbs a', 'BreadcrumbPaths' => array( 'display/**' ),
+            'GroupFolders' => array( 'display', 'display/*' ),
+            'TopParentRules' => array( 'Manual.html;', 'display/;', '**;Manual.html' ),
+        ) ) );
+        $type->setKnownPaths( $type->discover( $this->source ) );
+        $this->assertSame( '', $type->parentPath( 'Manual.html' ) );
+        $this->assertSame( '', $type->parentPath( 'display/' ) );
+        // pages/ has no page of its own: its pages go below Manual.html, not to the top
+        $this->assertSame( 'Manual.html', $type->parentPath( 'pages/viewpage00bb.html' ) );
+        $this->assertSame( 'display/', $type->parentPath( 'display/SPC/' ) );
+    }
 }
