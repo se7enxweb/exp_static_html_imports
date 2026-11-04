@@ -328,7 +328,9 @@ class expStaticImportEngine
                 $this->audit( 'system.staticimport_page.flag', array( 'path' => $path, 'object' => (int)$object->attribute( 'id' ) ) );
                 return;
             }
-            if ( $previous && isset( $previous['source_hash'] ) && $previous['source_hash'] === $sourceHash && empty( $unresolved ) )
+            // unchanged: the same source, and no link that was unresolved before can be resolved now
+            $before = $previous && isset( $previous['unresolved'] ) ? (array)$previous['unresolved'] : array();
+            if ( $previous && isset( $previous['source_hash'] ) && $previous['source_hash'] === $sourceHash && !array_diff( $before, $unresolved ) )
             {
                 $this->report['counts']['unchanged']++;
                 $this->state->setPage( $path, array( 'status' => 'unchanged' ) );
@@ -377,6 +379,7 @@ class expStaticImportEngine
         $this->state->setPage( $path, array( 'object_id' => (int)$object->attribute( 'id' ), 'node_id' => $node ? (int)$node->attribute( 'node_id' ) : 0,
                                               'source_hash' => $sourceHash, 'written_hash' => $this->contentHash( $object, array_keys( $attributes ) ),
                                               'written_fields' => array_keys( $attributes ),
+                                              'unresolved' => $unresolved,
                                               'status' => $status, 'class' => $page['class'], 'aliases' => isset( $page['aliases'] ) ? $page['aliases'] : array(),
                                               'child_of' => isset( $page['child_of'] ) ? $page['child_of'] : '',
                                               'duplicate_of' => '' ) );
@@ -447,6 +450,19 @@ class expStaticImportEngine
         $entry = $this->state->page( $path );
         if ( !$entry || empty( $entry['object_id'] ) || $this->options['dry_run'] )
             return;
+        // only when a link it could not resolve can be resolved now
+        $resolvable = false;
+        foreach ( isset( $entry['unresolved'] ) ? (array)$entry['unresolved'] : array() as $target )
+            if ( $this->state->nodeOf( $target ) || $this->state->asset( $target ) )
+            {
+                $resolvable = true;
+                break;
+            }
+        if ( !$resolvable )
+        {
+            unset( $this->state->data['pending_links'][$path] );
+            return;
+        }
         // forgetting the source hash makes importPage() write the page again with the links it can now resolve
         $this->state->setPage( $path, array( 'source_hash' => '' ) );
         $this->importPage( $path, $user );
