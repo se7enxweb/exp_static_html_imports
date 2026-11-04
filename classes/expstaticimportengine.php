@@ -446,7 +446,7 @@ class expStaticImportEngine
      */
     public function applyRoutes( $dryRun = false, $all = false, array $options = array() )
     {
-        $options += array( 'batch' => 0, 'resume' => false, 'limit' => 0 );
+        $options += array( 'batch' => 0, 'resume' => false, 'limit' => 0, 'trash_merged' => false );
         $this->options['pull'] = false;
         $this->options['dry_run'] = (bool)$dryRun;
         $this->report = array( 'counts' => array(), 'warnings' => array() );
@@ -456,12 +456,15 @@ class expStaticImportEngine
         if ( method_exists( $this->type, 'setKnownPaths' ) )
             $this->type->setKnownPaths( $paths );
         $user = $this->actAs();
+        // as in a run: the search index is queued for the cronjob indexcontent and the view cache cleared once at the end
+        $deferred = $this->deferWork();
         $root = $this->parentNode();
         $countChildren = function ( $node ) { return (int)eZDB::instance()->arrayQuery( "SELECT COUNT(*) AS n FROM ezcontentobject_tree WHERE parent_node_id = " . (int)$node )[0]['n']; };
         $out = array( 'root_children_before' => $countChildren( $root ), 'containers_created' => 0, 'containers' => 0, 'containers_moved' => 0,
                       'retitled' => 0, 'routed' => 0, 'moved' => 0, 'renamed' => 0, 'shown' => 0, 'related' => 0, 'not_imported' => 0,
                       'retired' => 0, 'leftovers' => 0, 'pages' => 0, 'items' => 0, 'start' => 0, 'position' => 0, 'batches' => 0,
-                      'complete' => false, 'families' => array(), 'moved_by' => array(), 'renamed_by' => array(), 'unplaced_by' => array(), 'retired_by' => array(), 'patch' => '' );
+                      'complete' => false, 'families' => array(), 'moved_by' => array(), 'renamed_by' => array(), 'unplaced_by' => array(), 'retired_by' => array(),
+                      'merged' => 0, 'merged_by' => array(), 'merged_fields_by' => array(), 'patch' => '' );
         $routes = method_exists( $this->type, 'routes' ) ? $this->type->routes() : array();
         // the containers, parents first: without $all only the route containers (the other group pages are the next
         // run's), with $all every group page
@@ -519,7 +522,13 @@ class expStaticImportEngine
             {
                 $out['batches']++;
                 if ( !$dryRun )
+                {
                     file_put_contents( $cursorFile, json_encode( array( 'position' => $i + 1, 'items' => count( $keys ), 'all' => (bool)$all, 'time' => time() ) ) );
+                    // what the next run must know, after every batch: an interrupted step loses none of it
+                    if ( $patch )
+                        $this->writeStatePatch( $patch, 'route-' . ( $i + 1 ) );
+                    $patch = array();
+                }
                 $this->emit( 'route', array( 'done' => $i + 1, 'of' => count( $keys ), 'moved' => $out['moved'], 'renamed' => $out['renamed'],
                                              'retired' => $out['retired'], 'root_children' => $countChildren( $root ) ) );
             }
@@ -529,6 +538,8 @@ class expStaticImportEngine
 
         // with $all: the import's leftovers at the top (nodes of earlier runs that are no pages of the state: pages
         // that became redirects, copies or no pages) go where RetiredRules[] send them, else into RetiredParent
+        // the copies merged into their pages: links and relations moved to the page, then the copies trashed or hidden
+        $this->finishMerges( $retiredNode, !empty( $options['trash_merged'] ), $out );
         if ( $all && $out['complete'] )
             $this->placeLeftovers( $root, $retiredNode, $containerNodes, $user, $out );
 
@@ -538,6 +549,8 @@ class expStaticImportEngine
             $out['patch'] = $this->writeStatePatch( $patch, 'route' );
             eZContentCacheManager::clearAllContentCache( true );
         }
+        $this->report['counts'] += array( 'created' => 0, 'updated' => 0 );
+        $this->finishDeferredWork( $deferred );
         $out['root_children_after'] = $countChildren( $root );
         $out['warnings'] = array_slice( $this->report['warnings'], 0, 50 );
         return $out;
@@ -662,10 +675,15 @@ class expStaticImportEngine
         $node = $object instanceof eZContentObject ? $object->attribute( 'main_node' ) : null;
         if ( !$node instanceof eZContentObjectTreeNode )
             return;
-        // a copy of another page (CopyOfPatterns[]: Exponential/index.html of Exponential.html) is no page of its own
-        if ( method_exists( $this->type, 'copyOf' ) && $this->type->copyOf( $path ) !== '' )
+        // a copy of another page (CopyOfPatterns[], FolderIndexCopies: Exponential/index.html of Exponential.html) is no
+        // page of its own: merged into the page it copies (mergeCopy())
+        if ( method_exists( $this->type, 'copyOf' ) && ( $canonical = $this->type->copyOf( $path ) ) !== '' )
         {
-            if ( $retiredNode )
+            $keep = $this->resolveParentNode( $canonical, $containerNodes );
+            $keepNode = $keep > 0 && $keep !== (int)$node->attribute( 'node_id' ) ? eZContentObjectTreeNode::fetch( $keep ) : null;
+            if ( $keepNode instanceof eZContentObjectTreeNode )
+                $this->mergeCopy( $path, $canonical, $object, $node, $keepNode, $patch, $out );
+            else if ( $retiredNode )
                 $this->retireNode( $node, $retiredNode, $out );
             return;
         }
@@ -785,6 +803,190 @@ class expStaticImportEngine
         {
             eZContentObject::clearCache( array( (int)$object->attribute( 'id' ) ) );
             $patch[$path] = array( 'written_hash' => $this->contentHash( eZContentObject::fetch( (int)$object->attribute( 'id' ) ), (array)$entry['written_fields'] ) );
+        }
+    }
+
+    /** @var array copy node id => the node it is merged into (mergeCopy()) */
+    protected $mergedNodes = array();
+
+    /** @var array copy object id => the object it is merged into */
+    protected $mergedObjects = array();
+
+    /** @var array copy path => array( node, keep node, old addresses ) */
+    protected $mergedCopies = array();
+
+    /**
+     * A copy of a page (copyOf()) that an earlier run imported as a node of its own goes into the page it copies:
+     * - its children move below that page (a child the page has already, by class and source comment id, source path
+     *   or name, stays with the copy), with names unique there;
+     * - the page takes the copy's contributors and maintainers it lacks, and its writer, updater, dates and page id
+     *   where it has none;
+     * - after every page of the step: the links and relations to the copy point at the page (finishMerges()), and the
+     *   copy goes to the trash (with $options['trash_merged']; else it is hidden in RetiredParent), its addresses and
+     *   source path then redirect to the page.
+     * The state patch records the copy's path as a duplicate of the page.
+     */
+    protected function mergeCopy( $path, $canonical, eZContentObject $object, eZContentObjectTreeNode $node, eZContentObjectTreeNode $keepNode, array &$patch, array &$out )
+    {
+        $dryRun = (bool)$this->options['dry_run'];
+        $keepObject = $keepNode->object();
+        $out['merged']++;
+        $this->tally( $out, 'merged_by', $path, 'node ' . $node->attribute( 'node_id' ) . ' into node ' . $keepNode->attribute( 'node_id' ) . " ($canonical)" );
+        $key = function ( eZContentObjectTreeNode $child )
+        {
+            $map = $child->dataMap();
+            foreach ( array( 'source_comment_id', 'source_path' ) as $identifier )
+                if ( isset( $map[$identifier] ) && trim( (string)$map[$identifier]->toString() ) !== '' )
+                    return $child->attribute( 'class_identifier' ) . "\0" . $identifier . "\0" . trim( (string)$map[$identifier]->toString() );
+            return $child->attribute( 'class_identifier' ) . "\0name\0" . mb_strtolower( (string)$child->attribute( 'name' ), 'UTF-8' );
+        };
+        $have = array();
+        foreach ( $keepNode->children() as $child )
+            $have[$key( $child )] = true;
+        foreach ( $node->children() as $child )
+        {
+            if ( isset( $have[$key( $child )] ) )
+            {
+                $out['merge_children_kept_with_copy'] = ( isset( $out['merge_children_kept_with_copy'] ) ? $out['merge_children_kept_with_copy'] : 0 ) + 1;
+                continue;
+            }
+            $out['merge_children_moved'] = ( isset( $out['merge_children_moved'] ) ? $out['merge_children_moved'] : 0 ) + 1;
+            $childObject = $child->object();
+            $name = $this->uniqueSiblingName( (int)$keepNode->attribute( 'node_id' ), (string)$childObject->attribute( 'name' ), (int)$childObject->attribute( 'id' ), array( 'path' => $path, 'meta' => array() ) );
+            if ( $dryRun )
+                continue;
+            eZContentObjectTreeNodeOperations::move( (int)$child->attribute( 'node_id' ), (int)$keepNode->attribute( 'node_id' ) );
+            if ( $name !== null && $name !== (string)$childObject->attribute( 'name' ) )
+                $this->renameObject( $childObject, $name );
+        }
+        // the people and the page id the page lacks
+        $changes = array();
+        $keepMap = $keepObject->dataMap();
+        $copyMap = $object->dataMap();
+        foreach ( array( 'contributors', 'maintainers' ) as $identifier )
+        {
+            if ( !isset( $keepMap[$identifier], $copyMap[$identifier] ) )
+                continue;
+            $ids = self::relationIDs( $keepMap[$identifier] );
+            $all = array_values( array_unique( array_merge( $ids, self::relationIDs( $copyMap[$identifier] ) ) ) );
+            if ( count( $all ) > count( $ids ) )
+                $changes[$identifier] = implode( '-', $all );
+        }
+        foreach ( array( 'written_by', 'written_at', 'last_updated_by', 'last_updated_at', 'source_page_id' ) as $identifier )
+            if ( isset( $keepMap[$identifier], $copyMap[$identifier] ) && !$keepMap[$identifier]->hasContent() && $copyMap[$identifier]->hasContent() )
+                $changes[$identifier] = (string)$copyMap[$identifier]->toString();
+        if ( $changes )
+        {
+            $out['merge_fields'] = ( isset( $out['merge_fields'] ) ? $out['merge_fields'] : 0 ) + count( $changes );
+            $this->tally( $out, 'merged_fields_by', $path, implode( ', ', array_keys( $changes ) ) );
+            if ( !$dryRun )
+                eZContentFunctions::updateAndPublishObject( $keepObject, array( 'attributes' => $changes, 'language' => $this->language() ) );
+        }
+        $addresses = array( (string)$node->attribute( 'url_alias' ) );
+        if ( strpos( $path, '(' ) === false )
+        {
+            $addresses[] = preg_replace( '/\.html?$/i', '', $path );
+            $addresses[] = $path;
+        }
+        $this->mergedNodes[(int)$node->attribute( 'node_id' )] = (int)$keepNode->attribute( 'node_id' );
+        $this->mergedObjects[(int)$object->attribute( 'id' )] = (int)$keepObject->attribute( 'id' );
+        $this->mergedCopies[$path] = array( 'node' => (int)$node->attribute( 'node_id' ), 'object' => (int)$object->attribute( 'id' ),
+                                            'keep' => (int)$keepNode->attribute( 'node_id' ), 'addresses' => array_values( array_unique( array_filter( $addresses ) ) ) );
+        $patch[$path] = array( 'status' => 'duplicate', 'duplicate_of' => $canonical, 'node_id' => 0, 'object_id' => 0, 'redirected' => true );
+    }
+
+    /**
+     * @return int[] the object ids of a relation list attribute
+     */
+    protected static function relationIDs( eZContentObjectAttribute $attribute )
+    {
+        $ids = array();
+        $content = $attribute->content();
+        foreach ( isset( $content['relation_list'] ) ? $content['relation_list'] : array() as $item )
+            $ids[] = (int)$item['contentobject_id'];
+        return $ids;
+    }
+
+    /**
+     * After the pages of a step: the links (node_id / object_id in the XML of the current versions) and the object
+     * relations to the merged copies point at the pages they were merged into; then each copy that nothing refers to
+     * any more goes to the trash ($trash) and its addresses redirect to the page, or it is hidden in RetiredParent.
+     */
+    protected function finishMerges( $retiredNode, $trash, array &$out )
+    {
+        if ( !$this->mergedCopies )
+            return;
+        $dryRun = (bool)$this->options['dry_run'];
+        $db = eZDB::instance();
+        $nodes = $this->mergedNodes;
+        $objects = $this->mergedObjects;
+        // the object relations
+        foreach ( $objects as $from => $to )
+        {
+            foreach ( (array)$db->arrayQuery( "SELECT id, from_contentobject_id, from_contentobject_version, contentclassattribute_id, relation_type FROM ezcontentobject_link WHERE to_contentobject_id = " . (int)$from ) as $row )
+            {
+                $out['merge_relations'] = ( isset( $out['merge_relations'] ) ? $out['merge_relations'] : 0 ) + 1;
+                if ( $dryRun )
+                    continue;
+                $same = $db->arrayQuery( "SELECT id FROM ezcontentobject_link WHERE to_contentobject_id = " . (int)$to . " AND from_contentobject_id = " . (int)$row['from_contentobject_id']
+                                         . " AND from_contentobject_version = " . (int)$row['from_contentobject_version'] . " AND contentclassattribute_id = " . (int)$row['contentclassattribute_id'] );
+                if ( $same || (int)$row['from_contentobject_id'] === (int)$to )
+                    $db->query( "DELETE FROM ezcontentobject_link WHERE id = " . (int)$row['id'] );
+                else
+                    $db->query( "UPDATE ezcontentobject_link SET to_contentobject_id = " . (int)$to . " WHERE id = " . (int)$row['id'] );
+            }
+        }
+        // the links in the XML of the current versions
+        $last = 0;
+        $rewrite = function ( $m ) use ( $nodes, $objects )
+        {
+            $map = $m[1] === 'node_id' ? $nodes : $objects;
+            return isset( $map[(int)$m[2]] ) ? $m[1] . '="' . $map[(int)$m[2]] . '"' : $m[0];
+        };
+        do
+        {
+            $rows = $db->arrayQuery( "SELECT a.id, a.version, a.data_text FROM ezcontentobject_attribute a JOIN ezcontentobject o ON o.id = a.contentobject_id AND o.current_version = a.version
+                                      WHERE a.data_type_string = 'ezxmltext' AND a.id > " . (int)$last . " AND ( a.data_text LIKE '%node_id=%' OR a.data_text LIKE '%object_id=%' ) ORDER BY a.id LIMIT 1000" );
+            foreach ( (array)$rows as $row )
+            {
+                $last = (int)$row['id'];
+                $text = preg_replace_callback( '/\b(node_id|object_id)="(\d+)"/', $rewrite, (string)$row['data_text'] );
+                if ( $text === (string)$row['data_text'] )
+                    continue;
+                $out['merge_links'] = ( isset( $out['merge_links'] ) ? $out['merge_links'] : 0 ) + 1;
+                if ( !$dryRun )
+                    $db->query( "UPDATE ezcontentobject_attribute SET data_text = '" . $db->escapeString( $text ) . "' WHERE id = " . (int)$row['id'] . " AND version = " . (int)$row['version'] );
+            }
+        }
+        while ( $rows );
+        // the copies: to the trash when nothing refers to them any more, and their addresses to the page
+        foreach ( $this->mergedCopies as $path => $copy )
+        {
+            $node = eZContentObjectTreeNode::fetch( $copy['node'] );
+            if ( !$node instanceof eZContentObjectTreeNode )
+                continue;
+            $left = $dryRun ? array( array( 'n' => 0 ) ) : $db->arrayQuery( "SELECT COUNT(*) AS n FROM ezcontentobject_link WHERE to_contentobject_id = " . (int)$copy['object'] );
+            if ( !$trash || (int)$left[0]['n'] > 0 )
+            {
+                if ( $trash )
+                    $this->report['warnings'][] = "$path: still referred to by {$left[0]['n']} relation(s), hidden instead of trashed";
+                if ( $retiredNode )
+                    $this->retireNode( $node, $retiredNode, $out );
+                continue;
+            }
+            $out['merged_trashed'] = ( isset( $out['merged_trashed'] ) ? $out['merged_trashed'] : 0 ) + 1;
+            if ( $dryRun )
+                continue;
+            eZContentObjectTreeNode::removeSubtrees( array( (int)$copy['node'] ), true );
+            $link = self::nameElementID( $copy['keep'] );
+            foreach ( $copy['addresses'] as $old )
+            {
+                if ( !$link || strpos( $old, '(' ) !== false || strpos( $old, '#' ) !== false )
+                    continue;
+                $result = eZURLAliasML::storePath( $old, 'eznode:' . $copy['keep'], $this->language() ?: false, $link, true, false, false, false, false, true );
+                if ( isset( $result['status'] ) && $result['status'] === true )
+                    $out['merge_redirects'] = ( isset( $out['merge_redirects'] ) ? $out['merge_redirects'] : 0 ) + 1;
+            }
         }
     }
 

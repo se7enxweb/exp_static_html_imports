@@ -149,4 +149,20 @@ class expStaticImportParentRulesTest extends \PHPUnit\Framework\TestCase
         $this->assertSame( 'display/confluence/pages/copies/', $type->parentPath( 'pages/viewpage00aa.html' ) );
         $this->assertSame( 'display/confluence/pages/', $type->parentPath( 'display/confluence/pages/copies/' ) );
     }
+
+    public function testAFolderIndexWithTheSameTextIsACopyOfThePageNextToItsFolder()
+    {
+        list( $type, $paths ) = $this->type( array( 'FolderIndexCopies' => 'enabled' ), 'index-copies' );
+        $this->assertSame( 'Guide.html', $type->copyOf( 'Guide/index.html' ) );
+        $this->assertSame( '', $type->copyOf( 'Other/index.html' ) );
+        $this->assertSame( '', $type->copyOf( 'Guide.html' ) );
+        $page = $type->parse( __DIR__ . '/fixtures/index-copies', 'Guide/index.html' );
+        $this->assertSame( 'Guide.html', $page['redirect_to'] );
+        $pairs = $type->folderIndexPairs( $paths );
+        $this->assertTrue( $pairs['Guide/index.html']['same'] );
+        $this->assertFalse( $pairs['Other/index.html']['same'] );
+        // off unless the rule says so
+        list( $off ) = $this->type( array(), 'index-copies' );
+        $this->assertSame( '', $off->copyOf( 'Guide/index.html' ) );
+    }
 }

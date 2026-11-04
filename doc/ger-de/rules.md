@@ -73,6 +73,11 @@ Ordners. Manche Exporte sind jedoch flach: Confluence speichert jede Seite eines
   Namen>]]`: wohin `route --all` einen Rest an der Spitze legt, oder eine Fehlerseite, die ein früherer Lauf als Seite
   importiert hat (eine Regel mit Namensprüfung: `/^Page Not Found\b/`), verborgen, mit einem dort eindeutigen Namen
   nach dem Muster (`{title}: {file}`); die anderen kommen in `RetiredParent`.
+- `FolderIndexCopies=enabled`: die Indexdatei eines Ordners (`<dir>/index.html`) mit demselben sichtbaren Text wie
+  `<dir>.html` (ohne Kopf, Skripte, Stile und Tags; Leerraum zusammengefasst) ist eine Kopie dieser Seite: ein Knoten,
+  ihr Pfad leitet weiter. `route --all` führt solche Kopien und die von `CopyOfPatterns[]` zusammen: ihre Kinder kommen
+  zur Seite (keines doppelt), die Seite übernimmt fehlende Mitwirkende und Autorenzeilen, Links und Relationen zeigen auf
+  die Seite, und mit `--trash-merged` kommt die Kopie in den Papierkorb, sobald nichts mehr auf sie verweist.
 
 ## Was keine Seite ist
 

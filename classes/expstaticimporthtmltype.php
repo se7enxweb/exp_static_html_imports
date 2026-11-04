@@ -846,6 +846,71 @@ abstract class expStaticImportHtmlType implements expStaticImportTypeInterface
         return array( $target, $alt );
     }
 
+    /** @var array path => its visible text (folderIndexCopyOf) */
+    protected $visibleTexts = array();
+
+    /**
+     * The text a reader sees in a page: the HTML without its head, scripts, styles, comments and tags, the entities
+     * decoded and the white space collapsed. Two pages that differ only in their stylesheet links have the same.
+     *
+     * @param string $html
+     * @return string
+     */
+    public static function visibleText( $html )
+    {
+        $html = preg_replace( array( '#<head\b.*?</head>#is', '#<script\b.*?</script>#is', '#<style\b.*?</style>#is', '#<!--.*?-->#s' ), ' ', (string)$html );
+        // every tag counts as a space, so text that differs only in its line breaks between elements is the same
+        $text = html_entity_decode( preg_replace( '/<[^>]*>/', ' ', (string)$html ), ENT_QUOTES | ENT_HTML5, 'UTF-8' );
+        return trim( preg_replace( '/\s+/u', ' ', $text ) );
+    }
+
+    /**
+     * FolderIndexCopies=enabled: a folder's index file (<dir>/index.html, IndexFiles[]) whose visible text is the same
+     * as that of the page next to the folder (<dir>.html) is a copy of that page: one node, the index file's path
+     * redirects to it.
+     *
+     * @param string $path
+     * @return string the page it copies, '' for none
+     */
+    public function folderIndexCopyOf( $path )
+    {
+        if ( !$this->rules->enabled( 'FolderIndexCopies', false ) || $this->sourceDir === '' )
+            return '';
+        $indexFiles = $this->rules->getList( 'IndexFiles' ) ?: array( 'index.html' );
+        if ( !in_array( basename( $path ), $indexFiles, true ) || dirname( $path ) === '.' )
+            return '';
+        $page = dirname( $path ) . '.html';
+        if ( !isset( $this->known[$page] ) && !is_file( $this->sourceDir . '/' . $page ) )
+            return '';
+        foreach ( array( $path, $page ) as $file )
+            if ( !isset( $this->visibleTexts[$file] ) )
+                $this->visibleTexts[$file] = self::visibleText( (string)@file_get_contents( $this->sourceDir . '/' . $file ) );
+        return $this->visibleTexts[$path] !== '' && $this->visibleTexts[$path] === $this->visibleTexts[$page] ? $page : '';
+    }
+
+    /**
+     * Every <dir>.html and <dir>/index.html of the source, with whether their visible text is the same (a report).
+     *
+     * @param array $paths the discovered paths
+     * @return array <dir>/index.html => array( 'page' => <dir>.html, 'same' => bool )
+     */
+    public function folderIndexPairs( array $paths )
+    {
+        $known = array_fill_keys( $paths, true );
+        $indexFiles = $this->rules->getList( 'IndexFiles' ) ?: array( 'index.html' );
+        $out = array();
+        foreach ( $paths as $path )
+        {
+            if ( !in_array( basename( $path ), $indexFiles, true ) || dirname( $path ) === '.' || !isset( $known[dirname( $path ) . '.html'] ) )
+                continue;
+            $page = dirname( $path ) . '.html';
+            $a = self::visibleText( (string)@file_get_contents( $this->sourceDir . '/' . $path ) );
+            $b = self::visibleText( (string)@file_get_contents( $this->sourceDir . '/' . $page ) );
+            $out[$path] = array( 'page' => $page, 'same' => $a !== '' && $a === $b );
+        }
+        return $out;
+    }
+
     /**
      * CopyOfPatterns[]: regular expressions on the path whose first group is the address of the page it copies (e.g.
      * "#^(.*)/\([a-z_]+\)/[^/]+\.html$#" for ".../(language)/eng-GB.html"). The page of that address is its .html, its
@@ -856,6 +921,9 @@ abstract class expStaticImportHtmlType implements expStaticImportTypeInterface
      */
     public function copyOf( $path )
     {
+        // FolderIndexCopies=enabled: <dir>/index.html with the same visible text as <dir>.html is that page
+        if ( ( $page = $this->folderIndexCopyOf( $path ) ) !== '' )
+            return $page;
         foreach ( $this->rules->getList( 'CopyOfPatterns' ) as $pattern )
         {
             if ( !@preg_match( $pattern, $path, $m ) || !isset( $m[1] ) )

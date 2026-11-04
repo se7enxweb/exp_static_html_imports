@@ -30,13 +30,16 @@ class Route extends \Exponential\Runnable\Command
                 . "  --batch=<n>      a progress line and a cursor (var/<site>/static-import/<label>/route-cursor.json) every n pages\n"
                 . "  --resume         continue from the cursor of an interrupted step\n"
                 . "  --limit=<n>      stop after n pages (continue with --resume)\n"
+                . "  --trash-merged   a copy merged into the page it copies (CopyOfPatterns[], FolderIndexCopies) goes to the\n"
+                . "                   trash once nothing refers to it, and its addresses redirect to the page (else it is hidden)\n"
                 . "  --dry-run        count, change nothing\n"
                 . "  --format=json    as JSON",
             'use-session' => false, 'use-modules' => true, 'use-extensions' => true
         ) );
-        $options = $this->startup( '[type:][dry-run][all][batch:][resume][limit:][format:]', '',
+        $options = $this->startup( '[type:][dry-run][all][batch:][resume][limit:][trash-merged][format:]', '',
                                    array( 'type' => 'The import type', 'dry-run' => 'Change nothing', 'all' => 'Every page where the rules put it',
                                           'batch' => 'Pages per batch', 'resume' => 'Continue from the cursor', 'limit' => 'Stop after this many pages',
+                                          'trash-merged' => 'Trash the merged copies',
                                           'format' => 'text or json' ) );
         $type = !empty( $options['type'] ) ? ltrim( (string)$options['type'], '-' ) : '';
         if ( $type === '' )
@@ -62,7 +65,7 @@ class Route extends \Exponential\Runnable\Command
         $engine = new \expStaticImportEngine( $type, array( 'pull' => false ), $progress );
         $result = $engine->applyRoutes( !empty( $options['dry-run'] ), !empty( $options['all'] ),
                                         array( 'batch' => isset( $options['batch'] ) ? (int)$options['batch'] : 0, 'resume' => !empty( $options['resume'] ),
-                                               'limit' => isset( $options['limit'] ) ? (int)$options['limit'] : 0 ) );
+                                               'limit' => isset( $options['limit'] ) ? (int)$options['limit'] : 0, 'trash_merged' => !empty( $options['trash-merged'] ) ) );
         if ( $json )
             $this->output( json_encode( array( 'schema' => \expStaticImportEngine::SCHEMA, 'ok' => true, 'type' => $type ) + $result, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE ) );
         else
@@ -71,9 +74,9 @@ class Route extends \Exponential\Runnable\Command
                 $this->output( sprintf( '  %6d  %s', $count, $family ) );
             foreach ( $result['warnings'] as $warning )
                 $this->output( '  warning: ' . $warning );
-            $this->output( sprintf( 'PASS %d containers (%d new, %d moved, %d renamed), %d routed pages imported (%d not yet), %d other pages checked, %d moved, %d renamed, %d retired, %d leftovers, %d shown again, %d relations; pages %d to %d of %d%s; the root had %d children, now %d',
+            $this->output( sprintf( 'PASS %d containers (%d new, %d moved, %d renamed), %d routed pages imported (%d not yet), %d other pages checked, %d moved, %d renamed, %d retired, %d leftovers, %d merged (%d trashed), %d shown again, %d relations; pages %d to %d of %d%s; the root had %d children, now %d',
                                     $result['containers'], $result['containers_created'], $result['containers_moved'], $result['retitled'], $result['routed'], $result['not_imported'],
-                                    $result['pages'], $result['moved'], $result['renamed'], $result['retired'], $result['leftovers'], $result['shown'], $result['related'],
+                                    $result['pages'], $result['moved'], $result['renamed'], $result['retired'], $result['leftovers'], $result['merged'], isset( $result['merged_trashed'] ) ? $result['merged_trashed'] : 0, $result['shown'], $result['related'],
                                     $result['start'], $result['position'], $result['items'], $result['complete'] ? '' : ' (not complete: continue with --resume)',
                                     $result['root_children_before'], $result['root_children_after'] ) );
         }

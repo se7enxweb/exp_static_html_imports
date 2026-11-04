@@ -137,6 +137,11 @@ unique. An object a class change replaced (remote id `<id>-was-<class>`) takes n
   name>]]`: where `route --all` puts a leftover at the top, or an error page an earlier run imported as a page (a rule
   with a name check: `/^Page Not Found\b/`), hidden, with a name of the pattern (`{title}: {file}`) unique there; the
   others go into `RetiredParent`.
+- `FolderIndexCopies=enabled`: a folder's index file (`<dir>/index.html`) with the same visible text as `<dir>.html`
+  (no head, scripts, styles or tags; white space collapsed) is a copy of that page: one node, its path redirects.
+  `route --all` merges such copies, and those of `CopyOfPatterns[]`, that an earlier run imported: their children move to
+  the page (none twice), the page takes the contributors and byline it lacks, links and relations point at the page,
+  and with `--trash-merged` the copy goes to the trash once nothing refers to it, its addresses redirecting to the page.
 
 ## Titles, headings and links
 
