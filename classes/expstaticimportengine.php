@@ -262,6 +262,7 @@ class expStaticImportEngine
         if ( method_exists( $this->type, 'setKnownPaths' ) )
             $this->type->setKnownPaths( $paths );
         $out = array( 'checked' => 0, 'hidden' => array(), 'already_hidden' => 0, 'kept' => array() );
+        $discovered = array_fill_keys( $paths, true );
         foreach ( $this->state->data['pages'] as $path => $entry )
         {
             $path = (string)$path;
@@ -272,17 +273,22 @@ class expStaticImportEngine
             if ( method_exists( $this->type, 'isGroup' ) && $this->type->isGroup( $path ) )
                 continue;
             $out['checked']++;
-            try
-            {
-                $page = is_file( $this->source . '/' . $path ) ? $this->type->parse( $this->source, $path ) : array();
-            }
-            catch ( Throwable $e )
-            {
+            $exists = is_file( $this->source . '/' . $path );
+            if ( $exists && !isset( $discovered[$path] ) )
+                // still in the source, but the rules leave it out now (ExcludePaths[], IncludePaths[], Suffixes[])
+                $page = false;
+            else
+                try
+                {
+                    $page = $exists ? $this->type->parse( $this->source, $path ) : array();
+                }
+                catch ( Throwable $e )
+                {
+                    continue;
+                }
+            if ( is_array( $page ) && !isset( $page['asset_of'] ) )
                 continue;
-            }
-            if ( $page !== null && !isset( $page['asset_of'] ) )
-                continue;
-            $why = $page === null ? 'no page' : 'the viewer of ' . $page['asset_of'];
+            $why = $page === false ? 'left out by the rules' : ( $page === null ? 'no page' : 'the viewer of ' . $page['asset_of'] );
             $node = eZContentObjectTreeNode::fetch( (int)$entry['node_id'] );
             if ( !$node instanceof eZContentObjectTreeNode )
                 continue;
