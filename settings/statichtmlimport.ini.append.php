@@ -14,8 +14,9 @@ HistorySize=50
 
 # Known variants of a person's name, one contributor on every import: Map[<variant>]=<name>. Variants match without
 # case, dots and extra spaces (Map[graham b]=Graham Brookins covers "Graham B."). A type's ContributorAliases[] wins.
-[ContributorAliases]
-Map[]
+# The group is left to the extensions that use it (no reset here, so the order of the extensions does not matter):
+# [ContributorAliases]
+# Map[graham b]=Graham Brookins
 
 # The import types: TypeList[<label>]=<class implementing expStaticImportTypeInterface>. The label is the option of
 # the command (--doc-html) and the name of the type's settings group [Type_<label>].
