@@ -122,7 +122,7 @@ class expStaticImportEngine
                                'resumed' => $resume, 'counts' => array_merge( array( 'pages' => 0, 'created' => 0, 'updated' => 0, 'unchanged' => 0,
                                    'flagged' => 0, 'failed' => 0, 'duplicates' => 0, 'hidden' => 0, 'assets' => 0, 'links' => 0, 'redirects' => 0,
                                    'removed' => 0 ), isset( $run['counts'] ) ? $run['counts'] : array() ),
-                               'flagged' => array(), 'failed' => array(), 'removed' => array(), 'warnings' => array() );
+                               'flagged' => array(), 'failed' => array(), 'removed' => array(), 'byline_failures' => array(), 'warnings' => array() );
         $this->audit( 'system.staticimport_run.start', array( 'run' => $run['id'], 'resumed' => $resume ) );
 
         $user = $this->actAs();
@@ -276,6 +276,70 @@ class expStaticImportEngine
     }
 
     /**
+     * Puts the contributor objects in place of a byline placeholder: {contributor:<field>} becomes the id of the
+     * contributor named in that byline field, {contributors:<field>} the ids of the names of a list field joined by "-"
+     * (as the relation list datatype takes them). A contributor is found by its remote id (from its normalised name)
+     * or created below ContributorParentRemoteID as ContributorClass, its name in ContributorNameAttribute.
+     *
+     * @param string $value
+     * @param array $page
+     * @param eZUser $user
+     * @return string
+     */
+    protected function contributorValue( $value, array $page, eZUser $user )
+    {
+        if ( !is_string( $value ) || !preg_match( '/^\{(contributors?):(\w+)\}$/', $value, $m ) )
+            return $value;
+        $field = isset( $page['bylines'][$m[2]] ) ? $page['bylines'][$m[2]] : array();
+        $names = isset( $field['names'] ) ? (array)$field['names'] : ( isset( $field['name'] ) ? array( $field['name'] ) : array() );
+        $ids = array();
+        foreach ( $names as $name )
+            if ( $id = $this->contributor( $name, $user ) )
+                $ids[] = $id;
+        return implode( '-', array_unique( $ids ) );
+    }
+
+    /**
+     * @param string $name
+     * @param eZUser $user
+     * @return int the contributor object of a person, 0 in a dry run or when none can be made
+     */
+    protected function contributor( $name, eZUser $user )
+    {
+        $class = (string)$this->rules->get( 'ContributorClass', '' );
+        $key = expStaticImportByline::normalizeName( $name );
+        if ( $class === '' || $key === '' )
+            return 0;
+        if ( isset( $this->state->data['contributors'][$key] ) && eZContentObject::exists( (int)$this->state->data['contributors'][$key] ) )
+            return (int)$this->state->data['contributors'][$key];
+        $remoteID = 'staticimport-contributor-' . md5( $key );
+        $object = eZContentObject::fetchByRemoteID( $remoteID );
+        if ( !$object instanceof eZContentObject )
+        {
+            if ( $this->options['dry_run'] )
+            {
+                $this->report['counts']['contributors'] = ( isset( $this->report['counts']['contributors'] ) ? $this->report['counts']['contributors'] : 0 ) + 1;
+                $this->state->data['contributors_dry'][$key] = true;
+                return 0;
+            }
+            $object = eZContentFunctions::createAndPublishObject( array(
+                'parent_node_id' => $this->nodeSetting( 'ContributorParentNode', 'ContributorParentRemoteID', $this->parentNode() ),
+                'class_identifier' => $class, 'creator_id' => (int)$user->attribute( 'contentobject_id' ), 'remote_id' => $remoteID,
+                'attributes' => array( (string)$this->rules->get( 'ContributorNameAttribute', 'name' ) => trim( preg_replace( '/\s+/u', ' ', $name ) ) ),
+                'language' => $this->language(),
+                'section_id' => $this->sectionByIdentifier( (string)$this->rules->get( 'ContributorSection', '' ) ) ) );
+            if ( !$object instanceof eZContentObject )
+            {
+                $this->report['warnings'][] = "the contributor '$name' could not be created as $class";
+                return 0;
+            }
+            $this->report['counts']['contributors'] = ( isset( $this->report['counts']['contributors'] ) ? $this->report['counts']['contributors'] : 0 ) + 1;
+        }
+        $this->state->data['contributors'][$key] = (int)$object->attribute( 'id' );
+        return (int)$object->attribute( 'id' );
+    }
+
+    /**
      * A path that is no longer a page of its own (an error page, a redirect stub): the node an earlier run made for it
      * is hidden (moved to the trash with --apply-removals).
      *
@@ -344,7 +408,9 @@ class expStaticImportEngine
         }
         $attributes = array();
         foreach ( $page['attributes'] as $identifier => $value )
-            $attributes[$identifier] = $value === '{body}' ? $xml : ( $value === '{hash}' ? $sourceHash : $value );
+            $attributes[$identifier] = $value === '{body}' ? $xml : ( $value === '{hash}' ? $sourceHash : $this->contributorValue( $value, $page, $user ) );
+        foreach ( isset( $page['byline_failures'] ) ? (array)$page['byline_failures'] : array() as $line )
+            $this->report['byline_failures'][] = array( 'path' => $path, 'line' => $line );
 
         $remoteID = self::remoteID( $this->label, $path );
         $object = eZContentObject::fetchByRemoteID( $remoteID );
@@ -931,6 +997,14 @@ class expStaticImportEngine
             $lines[] = '';
             foreach ( array_slice( $report[$key], 0, 500 ) as $entry )
                 $lines[] = '- `' . $entry['path'] . '`' . ( isset( $entry['reason'] ) ? ': ' . $entry['reason'] : '' );
+        }
+        if ( !empty( $report['byline_failures'] ) )
+        {
+            $lines[] = '';
+            $lines[] = '## Byline lines that could not be read (for review)';
+            $lines[] = '';
+            foreach ( array_slice( $report['byline_failures'], 0, 500 ) as $entry )
+                $lines[] = '- `' . $entry['path'] . '`: ' . $entry['line'];
         }
         if ( !empty( $report['warnings'] ) )
         {

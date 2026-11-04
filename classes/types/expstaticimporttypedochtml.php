@@ -125,19 +125,8 @@ class expStaticImportTypeDocHtml extends expStaticImportHtmlType
         if ( $page === null )
             return null;
         $meta = $page['meta'];
-        // the documentation site's own authorship box: "Written by: <name> (14/09/2010 10:22 am)" and
-        // "Last updated by: <name> (28/09/2010 9:12 am)"
-        foreach ( array( 'Written by' => array( 'author', 'created' ), 'Last updated by' => array( 'modifier', 'modified' ) ) as $label => $keys )
-            if ( preg_match( '/<label>' . $label . ':<\/label>\s*(.*?)(?:&nbsp;|\s)*\(([^)]*)\)/su', $html, $w ) )
-            {
-                $name = trim( html_entity_decode( strip_tags( $w[1] ), ENT_QUOTES, 'UTF-8' ) );
-                if ( $name !== '' )
-                    $meta[$keys[0]] = $name;
-                $date = DateTime::createFromFormat( 'd/m/Y g:i a', trim( $w[2] ) ) ?: DateTime::createFromFormat( 'd/m/Y H:i', trim( $w[2] ) );
-                if ( $date )
-                    $meta[$keys[1]] = $date->getTimestamp();
-            }
-        // Confluence: "Created by <a>A</a>, last modified by <a>B</a> on <date>" (or "Created and last modified by")
+        // the documentation site's own byline box (Written by, Last updated by, Maintainers) is read by the generic
+        // byline rules (BylineSelectors[], BylineFields[]) in parent::parse(). Confluence: "Created by <a>A</a>, last modified by <a>B</a> on <date>" (or "Created and last modified by")
         if ( preg_match( '/last modified by\s*(?:<a[^>]*>)?([^<]+?)(?:<\/a>)?\s+on\s+(\w+ \d{1,2},? \d{4})/iu', $html, $c ) )
         {
             $meta['modifier'] = trim( html_entity_decode( $c[1], ENT_QUOTES, 'UTF-8' ) );
@@ -146,6 +135,14 @@ class expStaticImportTypeDocHtml extends expStaticImportHtmlType
         }
         if ( preg_match( '/Created by\s*(?:<a[^>]*>)?([^<]+?)(?:<\/a>)?\s*,/iu', $html, $c ) )
             $meta['author'] = trim( html_entity_decode( $c[1], ENT_QUOTES, 'UTF-8' ) );
+        // Confluence's authorship into the byline fields too, when the page had no byline box
+        if ( empty( $page['bylines'] ) )
+        {
+            if ( !empty( $meta['author'] ) )
+                $page['bylines']['written'] = array( 'name' => $meta['author'], 'time' => isset( $meta['created'] ) ? (int)$meta['created'] : null );
+            if ( !empty( $meta['modifier'] ) )
+                $page['bylines']['updated'] = array( 'name' => $meta['modifier'], 'time' => isset( $meta['modified'] ) ? (int)$meta['modified'] : null );
+        }
         $folder = array_search( $path, $this->folderPages, true );
         if ( $folder !== false )
         {

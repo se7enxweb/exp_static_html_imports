@@ -159,6 +159,14 @@ abstract class expStaticImportHtmlType implements expStaticImportTypeInterface
         $originalNode = $originalSelector !== '' ? expStaticImportDom::first( $doc, $originalSelector ) : $body;
         $original = $originalNode ? expStaticImportDom::innerHtml( $originalNode ) : '';
 
+        // the byline (who wrote and updated the page) leaves the body for fields of its own
+        $byline = new expStaticImportByline( $this->rules );
+        $bylines = $byline->extract( $doc, $body );
+        if ( isset( $bylines['fields']['written']['name'] ) )
+            $meta['author'] = $bylines['fields']['written']['name'];
+        if ( !empty( $bylines['fields']['updated']['time'] ) )
+            $meta['modified'] = $bylines['fields']['updated']['time'];
+
         $cleaner = new expStaticImportHtmlCleaner( $this->rules );
         $bodyHtml = $cleaner->clean( $doc, $body );
 
@@ -178,6 +186,8 @@ abstract class expStaticImportHtmlType implements expStaticImportTypeInterface
             'hidden' => self::matchesAny( $path, $this->rules->getList( 'HiddenPaths' ) ),
             'aliases' => array(),
             'duplicate_candidate' => $this->isDuplicateCandidate( $path ),
+            'bylines' => $bylines['fields'],
+            'byline_failures' => $bylines['failures'],
         );
     }
 
@@ -238,6 +248,12 @@ abstract class expStaticImportHtmlType implements expStaticImportTypeInterface
             'description' => isset( $meta['description'] ) ? (string)$meta['description'] : '',
             'keywords' => isset( $meta['keywords'] ) ? implode( ', ', (array)$meta['keywords'] ) : '',
             'import_hash' => '{hash}',
+            // the byline: contributors are objects of their own, the engine puts their ids in place of these
+            'written_by' => isset( $page['bylines']['written']['name'] ) ? '{contributor:written}' : '',
+            'written_at' => !empty( $page['bylines']['written']['time'] ) ? (string)$page['bylines']['written']['time'] : '',
+            'last_updated_by' => isset( $page['bylines']['updated']['name'] ) ? '{contributor:updated}' : '',
+            'last_updated_at' => !empty( $page['bylines']['updated']['time'] ) ? (string)$page['bylines']['updated']['time'] : '',
+            'maintainers' => !empty( $page['bylines']['maintainers']['names'] ) ? '{contributors:maintainers}' : '',
             'labels_tags' => self::tagsString( isset( $meta['labels'] ) ? (array)$meta['labels'] : array(), (string)$this->rules->get( 'TagParent', '0' ),
                                                (string)$this->rules->get( 'Language', 'eng-US' ) ),
             'metadata_xml' => self::metadataXml( $page['title'], isset( $meta['keywords'] ) ? (array)$meta['keywords'] : array(),
