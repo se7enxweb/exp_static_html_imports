@@ -320,7 +320,8 @@ class expStaticImportEngine
             // the hash is taken over the attributes the import wrote then, so a changed attribute map is no edit
             $writtenHash = $previous && isset( $previous['written_hash'] ) ? $previous['written_hash'] : '';
             $writtenFields = $previous && !empty( $previous['written_fields'] ) ? (array)$previous['written_fields'] : array_keys( $attributes );
-            if ( $writtenHash !== '' && !$this->options['overwrite_flagged'] && $this->contentHash( $object, $writtenFields ) !== $writtenHash )
+            $edited = $writtenHash !== '' && $this->contentHash( $object, $writtenFields ) !== $writtenHash;
+            if ( $edited && !$this->options['overwrite_flagged'] )
             {
                 $this->report['counts']['flagged']++;
                 $this->report['flagged'][] = array( 'path' => $path, 'object_id' => (int)$object->attribute( 'id' ), 'reason' => 'changed in the CMS since the last import' );
@@ -330,7 +331,7 @@ class expStaticImportEngine
             }
             // unchanged: the same source, and no link that was unresolved before can be resolved now
             $before = $previous && isset( $previous['unresolved'] ) ? (array)$previous['unresolved'] : array();
-            if ( $previous && isset( $previous['source_hash'] ) && $previous['source_hash'] === $sourceHash && !array_diff( $before, $unresolved ) )
+            if ( $previous && isset( $previous['source_hash'] ) && $previous['source_hash'] === $sourceHash && !array_diff( $before, $unresolved ) && !$edited )
             {
                 $this->report['counts']['unchanged']++;
                 $this->state->setPage( $path, array( 'status' => 'unchanged' ) );
