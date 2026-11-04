@@ -277,7 +277,24 @@ class expStaticImportTypeDocHtml extends expStaticImportHtmlType
         if ( !$box instanceof DOMElement )
             return (string)$html;
         $cleaner = new expStaticImportHtmlCleaner( $this->rules );
-        return trim( $cleaner->clean( $doc, $box ) );
+        $html = trim( $cleaner->clean( $doc, $box ) );
+        // a <span> left over (a text pasted with its styles: <span class="s1">) means nothing to the XML and would be
+        // shown as text: its content stays, the span goes (a custom tag's span, type="custom", is kept)
+        if ( stripos( $html, '<span' ) === false )
+            return $html;
+        $doc = expStaticImportDom::load( '<html><head><meta charset="utf-8"></head><body><div id="static-import-comment-text">' . $html . '</div></body></html>' );
+        $box = $doc->getElementById( 'static-import-comment-text' );
+        if ( !$box instanceof DOMElement )
+            return $html;
+        foreach ( iterator_to_array( $box->getElementsByTagName( 'span' ) ) as $span )
+        {
+            if ( $span->hasAttribute( 'type' ) || !$span->parentNode )
+                continue;
+            while ( $span->firstChild )
+                $span->parentNode->insertBefore( $span->firstChild, $span );
+            $span->parentNode->removeChild( $span );
+        }
+        return trim( expStaticImportDom::innerHtml( $box ) );
     }
 
     /**

@@ -152,6 +152,9 @@ class expStaticImportDocHtmlFixtureTest extends \PHPUnit\Framework\TestCase
         $this->assertStringContainsString( '<span class="line">x = 1</span>', $third['original_html'] );
         // a comment's own markup leaves its replies out, and keeps its text's list
         $this->assertStringNotContainsString( 'comment2', $first['original_html'] );
+        // a pasted text's style spans go from the text (the XML would show them), the original keeps them
+        $this->assertSame( '<p class="p1">Top.</p>', $first['body_html'] );
+        $this->assertStringContainsString( '<span class="s1">Top.</span>', $first['original_html'] );
         $this->assertStringContainsString( 'a list item of the text', $second['original_html'] );
         $this->assertStringNotContainsString( 'Deepest', $second['original_html'] );
     }
