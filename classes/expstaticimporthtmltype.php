@@ -653,6 +653,18 @@ abstract class expStaticImportHtmlType implements expStaticImportTypeInterface
         $cleaner = new expStaticImportHtmlCleaner( $this->rules );
         $bodyHtml = $cleaner->clean( $doc, $body );
 
+        // NormalizeHeadings: the highest heading of the text becomes h1 and the others move up with it, since the
+        // page's own title is no heading of the body (an h2 below the title is the first section of the XML, which
+        // the designs draw one level below the title)
+        if ( $this->rules->enabled( 'NormalizeHeadings', false ) && preg_match_all( '/<h([1-6])\b/i', $bodyHtml, $levels ) )
+        {
+            $shift = min( array_map( 'intval', $levels[1] ) ) - 1;
+            if ( $shift > 0 )
+                $bodyHtml = preg_replace_callback( '/<(\/?)h([1-6])\b/i', function ( $m ) use ( $shift ) {
+                    return '<' . $m[1] . 'h' . max( 1, (int)$m[2] - $shift );
+                }, $bodyHtml );
+        }
+
         // the viewer of one media file (AssetPages): the file is imported as media, the page's path redirects to it
         if ( $asset = $this->assetOfPage( $doc, $body, $path ) )
             return array( 'path' => $path, 'title' => $title, 'body_html' => '', 'original_html' => '', 'meta' => $meta, 'hidden' => false,

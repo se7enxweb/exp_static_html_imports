@@ -44,7 +44,7 @@ class expStaticImportTreeRulesTest extends \PHPUnit\Framework\TestCase
             'GroupTitles' => array( 'display' => 'Spaces' ),
             'GroupTitleSelector' => '#breadcrumbs li.first a',
             'GroupClass' => 'exp_doc_section',
-            'AssetPages' => 'enabled', 'LinkHosts' => array( 'doc.example' ),
+            'AssetPages' => 'enabled', 'LinkHosts' => array( 'doc.example' ), 'NormalizeHeadings' => 'enabled',
             'DefaultClass' => 'exp_doc_page',
             'AttributeMap' => array( '*/title' => 'title', '*/body' => 'body' ),
         ) ) );
@@ -150,5 +150,13 @@ class expStaticImportTreeRulesTest extends \PHPUnit\Framework\TestCase
         // pages/ has no page of its own: its pages go below Manual.html, not to the top
         $this->assertSame( 'Manual.html', $type->parentPath( 'pages/viewpage00bb.html' ) );
         $this->assertSame( 'display/', $type->parentPath( 'display/SPC/' ) );
+    }
+
+    public function testTheHighestHeadingOfTheTextBecomesTheFirstLevel()
+    {
+        $page = $this->type->parse( $this->source, 'Manual.html' );
+        $this->assertSame( 'Manual', $page['title'] );
+        $this->assertStringContainsString( '<h1>Part</h1>', $page['body_html'] );
+        $this->assertStringContainsString( '<h2>Sub</h2>', $page['body_html'] );
     }
 }
