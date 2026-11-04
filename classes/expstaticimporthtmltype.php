@@ -554,11 +554,32 @@ abstract class expStaticImportHtmlType implements expStaticImportTypeInterface
             throw new expStaticImportPageException( "no body ($bodySelector) in $path" );
 
         $title = '';
-        $titleNode = expStaticImportDom::first( $doc, (string)$this->rules->get( 'TitleSelector', 'h1' ), $body );
+        $titleSelector = (string)$this->rules->get( 'TitleSelector', 'h1' );
+        $titleNode = null;
+        // TitleSelectorScope=document: each alternative of the selector in its order, in the whole page (a heading
+        // outside the body, such as Confluence's #title-text, before the first heading of the text); default: the
+        // body, the first match in document order
+        if ( (string)$this->rules->get( 'TitleSelectorScope', 'body' ) === 'document' )
+        {
+            foreach ( explode( ',', $titleSelector ) as $alternative )
+                if ( trim( $alternative ) !== '' && ( $titleNode = expStaticImportDom::first( $doc, trim( $alternative ) ) ) && expStaticImportDom::text( $titleNode ) !== '' )
+                    break;
+                else
+                    $titleNode = null;
+        }
+        else
+            $titleNode = expStaticImportDom::first( $doc, $titleSelector, $body );
+        $inBody = false;
+        for ( $parent = $titleNode; $parent; $parent = $parent->parentNode )
+            if ( $parent === $body )
+            {
+                $inBody = true;
+                break;
+            }
         if ( $titleNode )
         {
             $title = expStaticImportDom::text( $titleNode );
-            if ( $this->rules->enabled( 'RemoveTitleFromBody', true ) && $titleNode->parentNode )
+            if ( $this->rules->enabled( 'RemoveTitleFromBody', true ) && $titleNode->parentNode && $inBody )
             {
                 // the heading's wrapper (e.g. div.attribute-heading) goes with it when it holds nothing else
                 $wrapper = $titleNode->parentNode;
