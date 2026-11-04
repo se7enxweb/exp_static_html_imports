@@ -173,6 +173,16 @@ class expStaticImportDatesTest extends \PHPUnit\Framework\TestCase
         $this->assertSame( array( self::NOW, self::NOW, 'today', 'today' ), $this->brief( $this->chain()->resolve( 'historical/page-history/y/' ) ) );
     }
 
+    public function testRelationGivesAnEmptyContainerTheDatesOfThePageItBelongsTo()
+    {
+        $dates = new expStaticImportDates( new expStaticImportRules( 'test', array( 'DateRules' => array(
+            'created;children', 'created;relation;history_of', 'modified;children', 'modified;relation;history_of' ) ) ), '', '', self::NOW );
+        $related = function ( $identifier ) { return $identifier === 'history_of' ? array( 1262304000, 1325376000 ) : null; };
+        $this->assertSame( array( 1262304000, 1325376000, 'relation', 'relation' ), $this->brief( $dates->resolve( 'historical/page-history/x/', null, null, $related ) ) );
+        // its children, once it has them, come first
+        $this->assertSame( 'children', $dates->resolve( 'historical/page-history/x/', null, array( 'created' => 1300000000, 'modified' => 1400000000 ), $related )['created_source'] );
+    }
+
     public function testRulesParserAndDefaultChain()
     {
         $chain = expStaticImportDates::parseRules( array( 'created;attribute;written_at, created;byline', 'bogus;git', 'modified;nosuch',

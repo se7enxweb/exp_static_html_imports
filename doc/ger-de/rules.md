@@ -221,6 +221,7 @@ die erste Regel eines Felds, die ein Datum liefert, gewinnt.
 | `meta` | `<meta>`-Namen | Datums-Tags nach name, property, itemprop oder http-equiv (ISO-Daten, Unix-Zeiten in Sekunden oder Millisekunden) |
 | `mtime` | | die Dateizeit, nie die Zeit des Klonens oder später (`DateMtimeCloneWindow`, Standard 86400 Sekunden) |
 | `children` | | das früheste Erstellungs- und das späteste Änderungsdatum der Kinder des Objekts (ein Abschnitt ohne Datei) |
+| `relation` | Bezeichner von Relationsattributen | die Daten des Objekts, das es nennt, etwa der aktuellen Seite, zu der ein Verlaufs-Container gehört (`history_of`) |
 
 Die Bezeichnung nennt die Quelle im Bericht (Standard: die Quelle); die Pfade (Shell-Muster) beschränken eine Regel auf
 manche Seiten. Ein Erstellungsdatum nach dem Änderungsdatum übernimmt das Änderungsdatum; eine Seite mit nur einem

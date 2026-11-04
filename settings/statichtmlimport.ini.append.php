@@ -49,7 +49,8 @@ TypeList[sitemap-crawl]=expStaticImportTypeSitemapCrawl
 #                                     published and modified dates, its versions'), the first rule of a field that
 #                                     gives a date wins; sources: attribute (AttributeMap[] identifiers), git (first,
 #                                     last; nobulk leaves out commits of more than DateGitBulkCommitFiles files), meta
-#                                     (<meta> names), mtime (never the clone's time), children (a section's). Default:
+#                                     (<meta> names), mtime (never the clone's time), children (a section's), relation (the
+#                                     object a relation attribute names). Default:
 #                                     git, meta, mtime. The day of the run only when nothing gives a date.
 #                                     DateGitPathAliases[]=<regex>;<replacement> earlier names of a path in the
 #                                     history; DateTimezone; DateMtimeCloneWindow. exp:static-import:dates applies

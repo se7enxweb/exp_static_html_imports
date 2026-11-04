@@ -25,6 +25,8 @@
  *                         (DateMtimeCloneWindow, seconds, default 86400)
  *              children   the earliest created and the latest modified of the object's children (a section or a
  *                         container that has no file of its own)
+ *              relation   the dates of the object an object relation attribute names (identifiers, comma separated),
+ *                         such as the current page a history container belongs to (history_of)
  *   label      the name the report counts the source under (default: the source)
  *   paths      shell patterns, comma separated: the rule applies only to these source paths (default: every path)
  * When no rule gives a date, the time of the run is used, counted as "today". A created date later than the modified
@@ -119,7 +121,7 @@ class expStaticImportDates
             $field = strtolower( $parts[0] );
             $source = isset( $parts[1] ) ? strtolower( $parts[1] ) : '';
             if ( !in_array( $field, array( 'created', 'modified' ), true )
-                 || !in_array( $source, array( 'attribute', 'git', 'meta', 'mtime', 'children' ), true ) )
+                 || !in_array( $source, array( 'attribute', 'git', 'meta', 'mtime', 'children', 'relation' ), true ) )
                 continue;
             $chain[] = array( 'field' => $field, 'source' => $source, 'args' => $list( isset( $parts[2] ) ? $parts[2] : '' ),
                               'label' => isset( $parts[3] ) && $parts[3] !== '' ? $parts[3] : $source,
@@ -154,9 +156,11 @@ class expStaticImportDates
      * @param string $path the source path (a "#fragment", such as a comment's, reads its page's file)
      * @param callable|null $attribute receives an attribute identifier, returns a time or null
      * @param array|null $children array( 'created' => earliest, 'modified' => latest ) of the children, or null
+     * @param callable|null $related receives an attribute identifier, returns array( created, modified ) of the
+     *                      object it relates to, or null
      * @return array( 'created' => time, 'modified' => time, 'created_source' => label, 'modified_source' => label )
      */
-    public function resolve( $path, $attribute = null, $children = null )
+    public function resolve( $path, $attribute = null, $children = null, $related = null )
     {
         $file = $this->fileOf( $path );
         $page = (string)$path;
@@ -207,6 +211,15 @@ class expStaticImportDates
                 case 'children':
                     if ( is_array( $children ) && !empty( $children[$field] ) )
                         $time = (int)$children[$field];
+                    break;
+                case 'relation':
+                    if ( $related )
+                        foreach ( $rule['args'] as $identifier )
+                        {
+                            $dates = call_user_func( $related, $identifier );
+                            if ( is_array( $dates ) && ( $time = self::validTime( $field === 'created' ? $dates[0] : $dates[1] ) ) !== null )
+                                break;
+                        }
                     break;
             }
             $time = self::validTime( $time );

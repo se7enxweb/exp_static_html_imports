@@ -209,6 +209,7 @@ and its versions' created and modified dates, set when the import creates or upd
 | `meta` | `<meta>` names | date tags by name, property, itemprop or http-equiv (ISO dates, Unix times in seconds or milliseconds) |
 | `mtime` | | the file time, never the time of the clone or later (`DateMtimeCloneWindow`, default 86400 seconds) |
 | `children` | | the earliest created and the latest modified date of the object's children (a section without a file) |
+| `relation` | relation attribute identifiers | the dates of the object it names, such as the current page a history container belongs to (`history_of`) |
 
 The label names the source in the report (default: the source); the paths (shell patterns) limit a rule to some
 pages. A created date later than the modified date takes the modified date; a page with one date has it as both. The

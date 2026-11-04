@@ -3041,6 +3041,31 @@ class expStaticImportEngine
     }
 
     /**
+     * The dates of the objects an object's relation attributes name (the relation rules of DateRules[]).
+     *
+     * @param eZContentObject $object
+     * @param array|null $resolved object id => array( created, modified, ... ) the dates step has found: these first
+     * @param bool|null $stored without such an entry, the related object's own published and modified dates
+     *                          (default: only when no $resolved list is given)
+     * @return callable receives an attribute identifier, returns array( created, modified ) or null
+     */
+    protected function relatedDates( eZContentObject $object, $resolved = null, $stored = null )
+    {
+        $dataMap = $object->dataMap();
+        $stored = $stored === null ? $resolved === null : (bool)$stored;
+        return function ( $identifier ) use ( $dataMap, $resolved, $stored )
+        {
+            if ( !isset( $dataMap[$identifier] ) || !( $id = (int)$dataMap[$identifier]->attribute( 'data_int' ) ) )
+                return null;
+            if ( is_array( $resolved ) && isset( $resolved[$id] ) && $resolved[$id][2] !== expStaticImportDates::TODAY )
+                return array( (int)$resolved[$id][0], (int)$resolved[$id][1] );
+            if ( $stored && ( $related = eZContentObject::fetch( $id ) ) )
+                return array( (int)$related->attribute( 'published' ), (int)$related->attribute( 'modified' ) );
+            return null;
+        };
+    }
+
+    /**
      * The containers of a run that have no dates of their own take their children's, the deepest first.
      *
      * @param array $pending object id => path
@@ -3058,7 +3083,7 @@ class expStaticImportEngine
         {
             list( $object, $node, $path ) = $item;
             $children = $this->childrenDates( (int)$node->attribute( 'node_id' ) );
-            $dates = $this->datesChain()->resolve( $path, null, $children );
+            $dates = $this->datesChain()->resolve( $path, null, $children, $this->relatedDates( $object ) );
             if ( $dates['created_source'] !== expStaticImportDates::TODAY )
                 $done++;
             $this->storeDates( $object, $dates['created'], $dates['modified'] );
@@ -3192,7 +3217,7 @@ class expStaticImportEngine
                         }
                         $parsed = $this->parsedValues( $path );
                         return isset( $parsed[$identifier] ) ? $parsed[$identifier] : null;
-                    } );
+                    }, null, $this->relatedDates( $object, $state['resolved'] ) );
                     if ( $dates['created_source'] === expStaticImportDates::TODAY && $chain->uses( 'children' ) && (int)$object->attribute( 'main_node_id' ) )
                     {
                         $state['pending'][$id] = array( $path, $family );
@@ -3233,8 +3258,9 @@ class expStaticImportEngine
             foreach ( $items as $item )
             {
                 list( $id, $nodeID, , $entry ) = $item;
-                $dates = $chain->resolve( $entry[0], null, $this->childrenDates( $nodeID, $known ) );
                 $object = eZContentObject::fetch( $id );
+                $dates = $chain->resolve( $entry[0], null, $this->childrenDates( $nodeID, $known ),
+                                          $object ? $this->relatedDates( $object, $state['resolved'], true ) : null );
                 if ( !$options['dry_run'] && $object && $this->storeDates( $object, $dates['created'], $dates['modified'], false ) )
                     $changedIDs[] = $id;
                 if ( $dates['created_source'] !== expStaticImportDates::TODAY )
