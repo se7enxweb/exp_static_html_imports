@@ -89,6 +89,19 @@ class expStaticImportEngine
     /** @var array object id => path, the objects of this run whose dates wait for their children */
     protected $datesPending = array();
 
+    /** @var expStaticImportByline|null the byline reader of the type's rules, for contributor names */
+    protected $bylineParser = null;
+
+    /**
+     * @return expStaticImportByline
+     */
+    protected function bylineParser()
+    {
+        if ( $this->bylineParser === null )
+            $this->bylineParser = new expStaticImportByline( $this->rules );
+        return $this->bylineParser;
+    }
+
     /**
      * @param string $label the import type (doc-html, html-generic, markdown, sitemap-crawl)
      * @param array $options source, dry_run, apply_removals, batch, limit, paths (shell patterns), resume, restart,
@@ -1685,14 +1698,17 @@ class expStaticImportEngine
                 continue;
             }
             $value = $value === '' ? array() : (array)$value;
-            $have = array_map( array( 'expStaticImportByline', 'normalizeName' ), (array)$stored );
+            // one person under every variant of the name (a glued date, an alias): as contributor() finds them
+            $parser = $this->bylineParser();
+            $identity = function ( $name ) use ( $parser ) { return expStaticImportByline::normalizeName( $parser->canonicalName( $name ) ); };
+            $have = array_map( $identity, (array)$stored );
             foreach ( $value as $person )
-                if ( !in_array( expStaticImportByline::normalizeName( $person ), $have, true ) )
+                if ( !in_array( $identity( $person ), $have, true ) )
                     $missing[] = "$field: $person";
             // a person stored that the source does not name is wrong data (an earlier rule read text as a name)
-            $want = array_map( array( 'expStaticImportByline', 'normalizeName' ), $value );
+            $want = array_map( $identity, $value );
             foreach ( (array)$stored as $person )
-                if ( !in_array( expStaticImportByline::normalizeName( $person ), $want, true ) )
+                if ( !in_array( $identity( $person ), $want, true ) )
                     $missing[] = "$field: (not in the source) $person";
         }
         return $missing;
@@ -2001,8 +2017,9 @@ class expStaticImportEngine
     protected function contributor( $name, eZUser $user )
     {
         $class = (string)$this->rules->get( 'ContributorClass', '' );
-        // a name as written, never with the character references of a twice-encoded source (Kara&#347;)
-        $name = expStaticImportDom::decodeText( $name );
+        // a name as written, never with the character references of a twice-encoded source (Kara&#347;), a date or
+        // time glued to it, or a known variant of the person's name (ContributorAliases)
+        $name = $this->bylineParser()->canonicalName( $name );
         $key = expStaticImportByline::normalizeName( $name );
         if ( $class === '' || $key === '' )
             return 0;

@@ -125,6 +125,15 @@ Ordners. Manche Exporte sind jedoch flach: Confluence speichert jede Seite eines
   diesem. Ein relatives Datum („yesterday at 7:42 PM") zählt ab dem Tag, an dem der Export die Seite gespeichert hat
   (`BylineSavedAtPattern`).
 - Kommentarautoren (`BylineCommentAuthorSelectors[]`): das Listenfeld `commenters`.
+- Der Name einer mitwirkenden Person trägt nie ein Datum oder eine Uhrzeit: Ein am Namen klebendes Datum, mit seinen
+  Klammern, mit nur einer davon („Graham Brookins (14/08/2024 9:50 pm“) oder ohne („Ann 14/08/2024 9:50 pm“, „Ann,
+  Oct 28, 2016“), wird als Datum gelesen und vom Namen abgetrennt. Zeichenreferenzen einer doppelt kodierten Quelle
+  werden dekodiert (Kara&#347;).
+- Bekannte Varianten eines Namens sind eine Person: `[ContributorAliases] Map[<Variante>]=<Name>` in
+  statichtmlimport.ini (alle Typen) oder `ContributorAliases[<Variante>]=<Name>` in der Gruppe eines Typs (sie gilt
+  vorrangig). Varianten werden ohne Groß- und Kleinschreibung, Punkte und überzählige Leerzeichen verglichen
+  (`Map[graham b]=Graham Brookins` deckt „Graham B.“ ab). Der `author_name` eines Kommentars bleibt wie geschrieben;
+  nur seine Relation zeigt auf die Person.
 - Das Feld `contributors` enthält jede Person jedes Felds der Autorenzeile, jede einmal (Namen ohne Groß- und
   Kleinschreibung und überzählige Leerzeichen verglichen): einer Objektbeziehungsliste zuordnen, z. B.
   `AttributeMap[*/contributors]=contributors`.

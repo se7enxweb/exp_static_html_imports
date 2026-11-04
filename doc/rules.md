@@ -63,6 +63,13 @@ breadcrumb says where a page belongs.
   last modified by B on Oct 28, 2016". A sentence with the date of the last change and no name of its own credits the
   change to the writer. A date link whose `title` is a fuller date counts with that one.
 - Comment authors (`BylineCommentAuthorSelectors[]`): the list field `commenters`.
+- A contributor's name never carries a date or a time: one glued to the name, with its brackets, with one of them
+  missing ("Graham Brookins (14/08/2024 9:50 pm"), or none ("Ann 14/08/2024 9:50 pm", "Ann, Oct 28, 2016"), is read
+  as the date and cut off the name. Character references of a twice-encoded source are decoded (Kara&#347;).
+- Known variants of a person's name are one contributor: `[ContributorAliases] Map[<variant>]=<name>` in
+  statichtmlimport.ini (all types), or `ContributorAliases[<variant>]=<name>` in a type's group (it wins). Variants
+  match without case, dots and extra spaces (`Map[graham b]=Graham Brookins` covers "Graham B."). A comment's
+  `author_name` stays as written; only its relation goes to the person.
 - The field `contributors` holds every person of every byline field, each once (names compared without case and extra
   spaces): map it to an object relation list, e.g. `AttributeMap[*/contributors]=contributors`.
 - Byline text that no rule reads is reported per page (`byline_failures`), never dropped.

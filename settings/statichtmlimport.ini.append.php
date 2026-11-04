@@ -12,6 +12,11 @@ BatchSize=50
 # Run history kept per type (the admin view and the dashboard block show it)
 HistorySize=50
 
+# Known variants of a person's name, one contributor on every import: Map[<variant>]=<name>. Variants match without
+# case, dots and extra spaces (Map[graham b]=Graham Brookins covers "Graham B."). A type's ContributorAliases[] wins.
+[ContributorAliases]
+Map[]
+
 # The import types: TypeList[<label>]=<class implementing expStaticImportTypeInterface>. The label is the option of
 # the command (--doc-html) and the name of the type's settings group [Type_<label>].
 [ImportTypes]

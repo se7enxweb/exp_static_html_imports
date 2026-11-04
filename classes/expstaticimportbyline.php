@@ -121,7 +121,7 @@ class expStaticImportByline
                     $values = array();
                     foreach ( array( 'written', 'updated' ) as $field )
                     {
-                        $name = isset( $m[$field] ) ? expStaticImportDom::decodeText( trim( $m[$field] ) ) : '';
+                        $name = isset( $m[$field] ) ? $this->canonicalName( $m[$field] ) : '';
                         $time = isset( $m[$field . '_at'] ) && trim( $m[$field . '_at'] ) !== '' ? $this->parseDate( $m[$field . '_at'] ) : null;
                         if ( $name !== '' || $time !== null )
                             $values[$field] = array( 'name' => $name, 'time' => $time );
@@ -163,7 +163,7 @@ class expStaticImportByline
             foreach ( expStaticImportDom::query( $doc, $selector ) as $element )
             {
                 // a name as written, never with the character references of a twice-encoded source (Kara&#347;)
-                $name = expStaticImportDom::decodeText( trim( preg_replace( '/\s+/u', ' ', str_replace( "\xc2\xa0", ' ', $element->textContent ) ) ) );
+                $name = $this->canonicalName( $element->textContent );
                 if ( $name !== '' && !isset( $names[self::normalizeName( $name )] ) )
                     $names[self::normalizeName( $name )] = $name;
             }
@@ -244,7 +244,7 @@ class expStaticImportByline
         $value = trim( html_entity_decode( $value, ENT_QUOTES, 'UTF-8' ) );
         if ( in_array( $field, $this->rules->getList( 'BylineListFields' ), true ) )
         {
-            $names = array_values( array_filter( array_map( 'trim', explode( ',', $value ) ), 'strlen' ) );
+            $names = array_values( array_filter( array_map( array( $this, 'canonicalName' ), explode( ',', $value ) ), 'strlen' ) );
             return $names ? array( 'field' => $field, 'value' => array( 'names' => $names ) ) : null;
         }
         $time = null;
@@ -255,7 +255,20 @@ class expStaticImportByline
                 return null;
             $value = $m[1];
         }
-        $name = trim( $value );
+        else
+        {
+            // a date or time glued to the name without its brackets, or with one of them missing
+            // ("Graham Brookins (14/08/2024 9:50 pm"): the date is read, and never becomes part of the name
+            list( $name, $date ) = self::splitDateSuffix( $value );
+            if ( $date !== null )
+            {
+                $time = $this->parseDate( $date );
+                if ( $time === null )
+                    return null;
+                $value = $name;
+            }
+        }
+        $name = $this->canonicalName( $value );
         if ( $name === '' )
             return null;
         return array( 'field' => $field, 'value' => array( 'name' => $name, 'time' => $time ) );
@@ -296,5 +309,80 @@ class expStaticImportByline
     public static function normalizeName( $name )
     {
         return mb_strtolower( trim( preg_replace( '/\s+/u', ' ', (string)$name ) ), 'UTF-8' );
+    }
+
+    /** a date or a time a name may carry at its end: 14/08/2024, 2024-08-14, Oct 28, 2016, 28 Oct 2016, 9:50 pm, yesterday */
+    const DATE_TOKEN = '(?:\d{1,2}[\/.\-]\d{1,2}[\/.\-]\d{2,4}|\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}(?::\d{2})?(?:Z|[+\-]\d{2}:?\d{2})?)?|(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+\d{1,2}(?:st|nd|rd|th)?,?\s+\d{4}|\d{1,2}\.?\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?,?\s+\d{4}|\d{1,2}:\d{2}(?::\d{2})?(?:\s*[ap]\.?\s?m\.?)?|yesterday|today)';
+
+    /**
+     * Splits a date or time glued to the end of a name off it: "Graham Brookins (14/08/2024 9:50 pm",
+     * "Ann 14/08/2024 9:50 pm", "Ann, Oct 28, 2016 at 7:42 PM", "Ann [2024-08-14]", "Ann on Oct 28, 2016".
+     *
+     * @param string $text
+     * @return array( name, the date text or null when there is none )
+     */
+    public static function splitDateSuffix( $text )
+    {
+        $text = trim( preg_replace( '/\s+/u', ' ', str_replace( "\xc2\xa0", ' ', (string)$text ) ) );
+        $token = self::DATE_TOKEN;
+        // the date starts the text, or follows the name after a space, a comma, a dash or an opening bracket (never
+        // glued to a word: "andre1", "user12:30" stay names)
+        if ( preg_match( '/^(?:(?<name>.*?)[\s,;\-\x{2013}\x{2014}]*[\s(\[]\s*)?(?:(?:on|at)\s+)?(?<date>' . $token . '(?:[\s,]+(?:at\s+)?' . $token . ')*)\s*[)\]]?\s*$/iu', $text, $m ) )
+            return array( isset( $m['name'] ) ? trim( preg_replace( '/[\s,;(\[\-\x{2013}\x{2014}]+$/u', '', $m['name'] ) ) : '', trim( $m['date'] ) );
+        return array( $text, null );
+    }
+
+    /**
+     * A person's name as one contributor: the character references of a twice-encoded source decoded (Kara&#347;),
+     * a glued date or time removed, whitespace collapsed, and a known variant replaced by its person's name
+     * (ContributorAliases[<variant>]=<name> in the type's rules, and [ContributorAliases] Map[<variant>]=<name> of
+     * statichtmlimport.ini; variants match without case, dots and extra spaces: "Graham B." is "graham b").
+     *
+     * @param string $name
+     * @return string
+     */
+    public function canonicalName( $name )
+    {
+        $name = expStaticImportDom::decodeText( trim( preg_replace( '/\s+/u', ' ', str_replace( "\xc2\xa0", ' ', (string)$name ) ) ) );
+        list( $name ) = self::splitDateSuffix( $name );
+        $name = trim( preg_replace( '/[\s(\[]+$/u', '', $name ) );
+        $aliases = $this->aliases();
+        $key = self::aliasKey( $name );
+        return isset( $aliases[$key] ) ? $aliases[$key] : $name;
+    }
+
+    /**
+     * @param string $name
+     * @return string the key a name variant is looked up by: lower case, dots as spaces, whitespace collapsed
+     */
+    public static function aliasKey( $name )
+    {
+        return trim( preg_replace( '/[\s.]+/u', ' ', mb_strtolower( (string)$name, 'UTF-8' ) ) );
+    }
+
+    /** @var array|null alias key => the person's name */
+    protected $aliases = null;
+
+    /**
+     * @return array alias key => the person's name, from the rules (ContributorAliases[]) and statichtmlimport.ini
+     *               ([ContributorAliases] Map[]); the rules win
+     */
+    public function aliases()
+    {
+        if ( $this->aliases !== null )
+            return $this->aliases;
+        $map = array();
+        if ( class_exists( 'eZINI', false ) )
+        {
+            $ini = eZINI::instance( 'statichtmlimport.ini' );
+            if ( $ini->hasVariable( 'ContributorAliases', 'Map' ) )
+                $map = (array)$ini->variable( 'ContributorAliases', 'Map' );
+        }
+        $map = array_merge( $map, $this->rules->getHash( 'ContributorAliases' ) );
+        $this->aliases = array();
+        foreach ( $map as $variant => $person )
+            if ( trim( (string)$variant ) !== '' && trim( (string)$person ) !== '' )
+                $this->aliases[self::aliasKey( $variant )] = trim( preg_replace( '/\s+/u', ' ', (string)$person ) );
+        return $this->aliases;
     }
 }
