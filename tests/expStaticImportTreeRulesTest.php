@@ -159,4 +159,35 @@ class expStaticImportTreeRulesTest extends \PHPUnit\Framework\TestCase
         $this->assertStringContainsString( '<h1>Part</h1>', $page['body_html'] );
         $this->assertStringContainsString( '<h2>Sub</h2>', $page['body_html'] );
     }
+
+    public function testVirtualProductPagesAndFixedParents()
+    {
+        $type = new expStaticImportTypeDocHtml();
+        $type->configure( new expStaticImportRules( 'doc-html', array(
+            'BreadcrumbSelector' => '#breadcrumbs a', 'BreadcrumbPaths' => array( 'display/**' ),
+            'GroupFolders' => array( 'display', 'display/*' ),
+            'VirtualPages' => array( 'display/' => 'exp_doc_section;Exponential Platform;Platform;',
+                                     'display/legacy/' => 'exp_doc_section;Exponential Platform Legacy;Legacy;',
+                                     'basic/' => 'exp_doc_section;Exponential Basic;Basic;' . __DIR__ . '/fixtures/products/basic.html' ),
+            'ParentRules' => array( 'display/SPC/;display/legacy/' ),
+            'DefaultClass' => 'exp_doc_page',
+            'AttributeMap' => array( '*/title' => 'title', '*/short_title' => 'short_title' ),
+        ) ) );
+        $paths = $type->discover( $this->source );
+        $type->setKnownPaths( $paths );
+        $this->assertContains( 'basic/', $paths );
+        $this->assertSame( '', $type->parentPath( 'basic/' ) );
+        $this->assertSame( 'display/', $type->parentPath( 'display/legacy/' ) );
+        // a space below its product
+        $this->assertSame( 'display/legacy/', $type->parentPath( 'display/SPC/' ) );
+        $platform = $type->map( $type->parse( $this->source, 'display/' ) );
+        $this->assertSame( 'Exponential Platform', $platform['attributes']['title'] );
+        $this->assertSame( 'Platform', $platform['attributes']['short_title'] );
+        $basic = $type->map( $type->parse( $this->source, 'basic/' ) );
+        $this->assertSame( 'exp_doc_section', $basic['class'] );
+        $this->assertStringContainsString( 'A small CMS.', $basic['body_html'] );
+        // every page after its parent, also when a fixed parent comes later by the path order
+        $position = array_flip( $paths );
+        $this->assertLessThan( $position['display/SPC/'], $position['display/legacy/'] );
+    }
 }

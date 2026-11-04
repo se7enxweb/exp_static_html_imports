@@ -271,6 +271,7 @@ abstract class expStaticImportHtmlType implements expStaticImportTypeInterface
             }
         }
         $paths = $this->readRoutes( $source, $paths );
+        $paths = $this->readVirtualPages( $paths );
         // a breadcrumb that leads round in a circle (A below B below A) is not followed
         $this->known = array_fill_keys( $paths, true );
         foreach ( array_keys( $this->breadcrumbParents ) as $path )
@@ -307,6 +308,37 @@ abstract class expStaticImportHtmlType implements expStaticImportTypeInterface
      * @param array $paths
      * @return array the paths, with the containers added
      */
+    /**
+     * VirtualPages[<path ending in />]=<class>;<title>;<short title>;<body file>: a section page the source does not
+     * have (a product's landing page), or new values for a group page (GroupFolders[]). Its parent comes from the path,
+     * ParentRules[] or TopParentRules[]; its address from the short title (the name pattern of the class); its text is
+     * the HTML file (a path below the installation's root), if one is given.
+     *
+     * @param array $paths
+     * @return array the paths, with the virtual pages added
+     */
+    protected function readVirtualPages( array $paths )
+    {
+        $this->virtualPages = array();
+        foreach ( $this->rules->getHash( 'VirtualPages' ) as $path => $value )
+        {
+            $path = rtrim( (string)$path, '/' ) . '/';
+            list( $class, $title, $short, $body ) = array_pad( array_map( 'trim', explode( ';', (string)$value, 4 ) ), 4, '' );
+            if ( $title === '' )
+                continue;
+            if ( !isset( $this->groups[$path] ) )
+                $paths[] = $path;
+            $this->groups[$path] = $title;
+            if ( $class !== '' )
+                $this->groupClasses[$path] = $class;
+            $this->virtualPages[$path] = array( 'short_title' => $short, 'body' => $body );
+        }
+        return $paths;
+    }
+
+    /** @var array path => array( 'short_title', 'body' ) of VirtualPages[] */
+    protected $virtualPages = array();
+
     protected function readRoutes( $source, array $paths )
     {
         $this->routes = $this->groupClasses = $this->groupMeta = array();
@@ -502,6 +534,19 @@ abstract class expStaticImportHtmlType implements expStaticImportTypeInterface
                 $page['body_html'] = $source['body_html'];
                 $page['original_html'] = isset( $source['original_html'] ) ? $source['original_html'] : '';
                 $page['meta']['description'] = isset( $source['meta']['description'] ) ? $source['meta']['description'] : '';
+            }
+        }
+        // a virtual page (VirtualPages[]): its short title (its address) and its text from a file
+        if ( isset( $this->virtualPages[$path] ) )
+        {
+            if ( $this->virtualPages[$path]['short_title'] !== '' )
+                $page['short_title'] = $this->virtualPages[$path]['short_title'];
+            $file = $this->virtualPages[$path]['body'];
+            if ( $file !== '' && is_file( $file ) )
+            {
+                $page['body_html'] = trim( (string)file_get_contents( $file ) );
+                $page['original_html'] = $page['body_html'];
+                $page['meta']['description'] = mb_substr( trim( preg_replace( '/\s+/u', ' ', strip_tags( preg_replace( '#<h[1-6][^>]*>.*?</h[1-6]>#s', '', $page['body_html'] ) ) ) ), 0, 300 );
             }
         }
         $class = isset( $this->groupClasses[$path] ) ? $this->groupClasses[$path] : trim( (string)$this->rules->get( 'GroupClass', '' ) );
@@ -823,7 +868,7 @@ abstract class expStaticImportHtmlType implements expStaticImportTypeInterface
         $meta = isset( $page['meta'] ) ? $page['meta'] : array();
         return array(
             'title' => $page['title'],
-            'short_title' => mb_strlen( $page['title'] ) > 60 ? mb_substr( $page['title'], 0, 57 ) . '...' : $page['title'],
+            'short_title' => !empty( $page['short_title'] ) ? (string)$page['short_title'] : ( mb_strlen( $page['title'] ) > 60 ? mb_substr( $page['title'], 0, 57 ) . '...' : $page['title'] ),
             'body' => '{body}',
             'original_html' => isset( $page['original_html'] ) ? $page['original_html'] : '',
             'source_path' => $page['path'],
@@ -897,6 +942,13 @@ abstract class expStaticImportHtmlType implements expStaticImportTypeInterface
     {
         if ( isset( $this->routes[$path] ) )
             return $this->routes[$path]['container'];
+        // ParentRules[]=<shell pattern>;<parent path>: a fixed parent before any other rule (a space below its product)
+        foreach ( $this->rules->getList( 'ParentRules' ) as $rule )
+        {
+            list( $pattern, $parent ) = array_pad( array_map( 'trim', explode( ';', $rule, 2 ) ), 2, '' );
+            if ( $pattern !== '' && $parent !== '' && $parent !== $path && self::matches( $path, $pattern ) && isset( $this->known[$parent] ) )
+                return $parent;
+        }
         $parent = isset( $this->breadcrumbParents[$path] ) ? $this->breadcrumbParents[$path] : $this->folderParent( $path );
         return $parent === '' ? $this->topParent( $path ) : $parent;
     }

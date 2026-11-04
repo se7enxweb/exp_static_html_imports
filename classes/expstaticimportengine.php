@@ -796,6 +796,10 @@ class expStaticImportEngine
                         $attribute = $dataMap[$identifier];
                         if ( $field === 'original_html' && sha1( trim( (string)$attribute->attribute( 'data_text' ) ) ) !== sha1( trim( (string)$comment['original_html'] ) ) )
                             $missing[] = "comment $id: the original text differs";
+                        if ( $field === 'body' && trim( strip_tags( (string)$comment['body_html'] ) ) !== '' && trim( strip_tags( (string)$attribute->attribute( 'data_text' ) ) ) === '' )
+                            $missing[] = "comment $id: no text";
+                        if ( $field === 'author_name' && !empty( $comment['meta']['author'] ) && trim( (string)$attribute->attribute( 'data_text' ) ) === '' )
+                            $missing[] = "comment $id: no author name";
                         if ( $field === 'written_by' && !empty( $comment['meta']['author'] ) && !(int)$attribute->attribute( 'data_int' ) )
                             $missing[] = "comment $id: no author";
                         if ( ( $field === 'written_at' || $field === 'modified' ) && !empty( $comment['meta']['modified'] ) && (int)$attribute->attribute( 'data_int' ) !== (int)$comment['meta']['modified'] )
