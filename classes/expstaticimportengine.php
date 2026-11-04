@@ -1658,6 +1658,13 @@ class expStaticImportEngine
         if ( !$user instanceof eZUser )
             throw new RuntimeException( "no user '$login' to import as (ImportUser)" );
         eZUser::setCurrentlyLoggedInUser( $user, (int)$user->attribute( 'contentobject_id' ), eZUser::NO_SESSION_REGENERATE );
+        // a siteaccess whose content root is the import's top node (a site of a multisite tree, content.ini
+        // [NodeSettings] RootNode) would give that node an empty URL alias when it is published (RootPage), and every
+        // address below it would break: for this process the content root is the node above it
+        $content = eZINI::instance( 'content.ini' );
+        $top = eZContentObjectTreeNode::fetch( $this->parentNode() );
+        if ( $top && (int)$content->variable( 'NodeSettings', 'RootNode' ) === (int)$top->attribute( 'node_id' ) && (int)$top->attribute( 'parent_node_id' ) > 1 )
+            $content->setVariable( 'NodeSettings', 'RootNode', (string)$top->attribute( 'parent_node_id' ) );
         return $user;
     }
 
