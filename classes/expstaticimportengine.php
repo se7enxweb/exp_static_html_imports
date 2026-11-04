@@ -650,7 +650,7 @@ class expStaticImportEngine
      * @return array( 'pages' => n, 'people' => n, 'dates' => n, 'missing' => n, 'filled' => n, 'unknown' => n,
      *                'by_page' => array( path => array( 'missing' => list, 'unknown' => list ) ) )
      */
-    public function bylines( array $patterns = array(), $fill = false )
+    public function bylines( array $patterns = array(), $fill = false, $replaceRoles = false )
     {
         $this->options['pull'] = false;
         $this->source = $this->prepareSource();
@@ -701,7 +701,7 @@ class expStaticImportEngine
             $missing = $this->missingBylines( $object, $attributes, $expected );
             if ( $missing && $fill )
             {
-                if ( $this->fillBylines( $object, $attributes, $expected, $missing, $page, $user ) )
+                if ( $this->fillBylines( $object, $attributes, $expected, $missing, $page, $user, $replaceRoles && ( !isset( $entry['status'] ) || $entry['status'] !== 'flagged' ) ) )
                     $out['filled']++;
                 eZContentObject::clearCache( array( (int)$object->attribute( 'id' ) ) );
                 $missing = $this->missingBylines( eZContentObject::fetch( (int)$object->attribute( 'id' ) ), $attributes, $expected );
@@ -744,20 +744,24 @@ class expStaticImportEngine
         $missing = array();
         foreach ( $expected as $field => $value )
         {
-            if ( $value === '' || $value === 0 || $value === array() )
-                continue;
             $attribute = isset( $attributes[$field], $dataMap[$attributes[$field]] ) ? $dataMap[$attributes[$field]] : null;
             $stored = $attribute ? $this->storedByline( $attribute, self::BYLINE_FIELDS[$field] ) : null;
             if ( self::BYLINE_FIELDS[$field] === 'time' )
             {
-                if ( (int)$stored !== (int)$value )
+                if ( $value && (int)$stored !== (int)$value )
                     $missing[] = "$field: " . date( 'c', (int)$value );
                 continue;
             }
+            $value = $value === '' ? array() : (array)$value;
             $have = array_map( array( 'expStaticImportByline', 'normalizeName' ), (array)$stored );
-            foreach ( (array)$value as $person )
+            foreach ( $value as $person )
                 if ( !in_array( expStaticImportByline::normalizeName( $person ), $have, true ) )
                     $missing[] = "$field: $person";
+            // a person stored that the source does not name is wrong data (an earlier rule read text as a name)
+            $want = array_map( array( 'expStaticImportByline', 'normalizeName' ), $value );
+            foreach ( (array)$stored as $person )
+                if ( !in_array( expStaticImportByline::normalizeName( $person ), $want, true ) )
+                    $missing[] = "$field: (not in the source) $person";
         }
         return $missing;
     }
@@ -792,7 +796,7 @@ class expStaticImportEngine
      *
      * @return bool whether anything was written
      */
-    protected function fillBylines( eZContentObject $object, array $attributes, array $expected, array $missing, array $page, eZUser $user )
+    protected function fillBylines( eZContentObject $object, array $attributes, array $expected, array $missing, array $page, eZUser $user, $replaceRoles = false )
     {
         $fields = array();
         foreach ( $missing as $line )
@@ -810,8 +814,8 @@ class expStaticImportEngine
             $kind = self::BYLINE_FIELDS[$field];
             if ( $kind === 'time' )
             {
-                // a role's date is filled when empty, never replaced
-                if ( (int)$attribute->attribute( 'data_int' ) )
+                // a role's date is filled when empty, replaced only with --replace-roles
+                if ( (int)$attribute->attribute( 'data_int' ) && !$replaceRoles )
                     continue;
                 $attribute->setAttribute( 'data_int', (int)$expected[$field] );
                 $attribute->setAttribute( 'sort_key_int', (int)$expected[$field] );
@@ -820,27 +824,38 @@ class expStaticImportEngine
                 continue;
             }
             $ids = array();
-            foreach ( (array)$expected[$field] as $name )
+            foreach ( $expected[$field] === '' ? array() : (array)$expected[$field] as $name )
                 if ( $id = $this->contributor( $name, $user ) )
                     $ids[] = $id;
-            if ( !$ids )
+            // nobody to write, unless --replace-roles clears what the source does not name
+            if ( !$ids && !$replaceRoles )
                 continue;
+            $classAttributeID = (int)$attribute->attribute( 'contentclassattribute_id' );
             if ( $kind === 'person' )
             {
-                if ( (int)$attribute->attribute( 'data_int' ) )
+                $old = (int)$attribute->attribute( 'data_int' );
+                if ( $old && !$replaceRoles )
                     continue;
-                $attribute->setAttribute( 'data_int', $ids[0] );
-                $attribute->setAttribute( 'sort_key_int', $ids[0] );
+                $new = $ids ? (int)$ids[0] : 0;
+                // --replace-roles: the role is the source's person, the one it held loses the relation
+                if ( $old && $old !== $new )
+                    $object->removeContentObjectRelation( $old, $version, $classAttributeID, eZContentObject::RELATION_ATTRIBUTE );
+                $attribute->setAttribute( 'data_int', $new );
+                $attribute->setAttribute( 'sort_key_int', $new );
                 $attribute->store();
             }
             else
             {
-                // a list keeps what it has and gets the people it lacks
+                // a list keeps what it has and gets the people it lacks; with --replace-roles it is exactly the
+                // source's people, and the others lose their relation
                 $have = array();
                 $content = $attribute->content();
                 foreach ( isset( $content['relation_list'] ) ? $content['relation_list'] : array() as $item )
                     $have[] = (int)$item['contentobject_id'];
-                $ids = array_values( array_unique( array_merge( $have, $ids ) ) );
+                if ( $replaceRoles )
+                    foreach ( array_diff( $have, $ids ) as $old )
+                        $object->removeContentObjectRelation( (int)$old, $version, $classAttributeID, eZContentObject::RELATION_ATTRIBUTE );
+                $ids = array_values( array_unique( $replaceRoles ? $ids : array_merge( $have, $ids ) ) );
                 $attribute->fromString( implode( '-', $ids ) );
                 $attribute->store();
             }

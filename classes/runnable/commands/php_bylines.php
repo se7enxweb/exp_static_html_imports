@@ -26,12 +26,14 @@ class Bylines extends \Exponential\Runnable\Command
                 . "  --type=<label>     the import type (e.g. doc-html)\n"
                 . "  --path=<pattern>   only these source paths (shell pattern, may be repeated)\n"
                 . "  --fill             write what is missing\n"
+                . "  --replace-roles    with --fill: a role or contributors list that holds another person than the source\n"
+                . "                     names gets the source's (pages an editor changed are left alone)\n"
                 . "  --details=<n>      list up to n pages with what they miss (default 20)\n"
                 . "  --format=json      the whole report as JSON",
             'use-session' => false, 'use-modules' => true, 'use-extensions' => true
         ) );
-        $options = $this->startup( '[type:][path:*][fill][details:][format:]', '', array( 'type' => 'The import type', 'path' => 'Only these paths',
-                                    'fill' => 'Write what is missing', 'details' => 'Pages listed', 'format' => 'text or json' ) );
+        $options = $this->startup( '[type:][path:*][fill][replace-roles][details:][format:]', '', array( 'type' => 'The import type', 'path' => 'Only these paths',
+                                    'fill' => 'Write what is missing', 'replace-roles' => 'Replace roles the source names otherwise', 'details' => 'Pages listed', 'format' => 'text or json' ) );
         $type = !empty( $options['type'] ) ? ltrim( (string)$options['type'], '-' ) : '';
         if ( $type === '' )
         {
@@ -40,7 +42,7 @@ class Bylines extends \Exponential\Runnable\Command
             return 2;
         }
         $engine = new \expStaticImportEngine( $type, array( 'pull' => false ) );
-        $result = $engine->bylines( !empty( $options['path'] ) ? (array)$options['path'] : array(), !empty( $options['fill'] ) );
+        $result = $engine->bylines( !empty( $options['path'] ) ? (array)$options['path'] : array(), !empty( $options['fill'] ), !empty( $options['replace-roles'] ) );
         $ok = !$result['missing'] && !$result['unknown'];
         if ( isset( $options['format'] ) && $options['format'] === 'json' )
             $this->output( json_encode( array( 'schema' => \expStaticImportEngine::SCHEMA, 'ok' => $ok, 'type' => $type ) + $result, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE ) );

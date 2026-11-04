@@ -126,24 +126,13 @@ class expStaticImportTypeDocHtml extends expStaticImportHtmlType
         if ( $page === null || isset( $page['asset_of'] ) )
             return $page;
         $meta = $page['meta'];
-        // the documentation site's own byline box (Written by, Last updated by, Maintainers) is read by the generic
-        // byline rules (BylineSelectors[], BylineFields[]) in parent::parse(). Confluence: "Created by <a>A</a>, last modified by <a>B</a> on <date>" (or "Created and last modified by")
-        if ( preg_match( '/last modified by\s*(?:<a[^>]*>)?([^<]+?)(?:<\/a>)?\s+on\s+(\w+ \d{1,2},? \d{4})/iu', $html, $c ) )
-        {
-            $meta['modifier'] = trim( html_entity_decode( $c[1], ENT_QUOTES, 'UTF-8' ) );
-            if ( $time = strtotime( $c[2] ) )
-                $meta['modified'] = $time;
-        }
-        if ( preg_match( '/Created by\s*(?:<a[^>]*>)?([^<]+?)(?:<\/a>)?\s*,/iu', $html, $c ) )
-            $meta['author'] = trim( html_entity_decode( $c[1], ENT_QUOTES, 'UTF-8' ) );
-        // Confluence's authorship into the byline fields too, when the page had no byline box
-        if ( empty( $page['bylines'] ) )
-        {
-            if ( !empty( $meta['author'] ) )
-                $page['bylines']['written'] = array( 'name' => $meta['author'], 'time' => isset( $meta['created'] ) ? (int)$meta['created'] : null );
-            if ( !empty( $meta['modifier'] ) )
-                $page['bylines']['updated'] = array( 'name' => $meta['modifier'], 'time' => isset( $meta['modified'] ) ? (int)$meta['modified'] : null );
-        }
+        // the bylines (the documentation site's byline box, Confluence's byline sentence, the comment authors) are read
+        // by the generic byline rules in parent::parse(), only from their own elements. (A search of the whole HTML
+        // for "Created by ..." read sentences of the text as names, and is gone.)
+        if ( !empty( $page['bylines']['written']['name'] ) )
+            $meta['author'] = $page['bylines']['written']['name'];
+        if ( !empty( $page['bylines']['updated']['name'] ) )
+            $meta['modifier'] = $page['bylines']['updated']['name'];
         $folder = array_search( $path, $this->folderPages, true );
         if ( $folder !== false )
         {
