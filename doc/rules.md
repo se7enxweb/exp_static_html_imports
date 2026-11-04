@@ -70,3 +70,34 @@ breadcrumb says where a page belongs.
   bylines is looked for in the stored attributes, per page and in total, with the unknown byline texts. `--fill` writes
   what is missing into the published versions (a role attribute only when it is empty, the contributors list to the
   full set) with their object relations, without a run and without touching the state file.
+
+## Routes: a family of pages in a container of its own
+
+Some exports hold hundreds of views of their pages with one name each, such as Confluence's "Page History",
+"Page Comparison", "Page Information" and old versions. In the tree they would be hundreds of same-name siblings.
+`RouteRules[]` sends such a family into containers, with names of their own:
+
+    RouteMeta[page_id]=/name="ajs-page-id" content="(\d+)"/
+    RouteRules[]=pages/viewpreviousversions*;historical/page-history/{page_id}/;{page_title}: page history;;{page_id}
+    RouteContainers[historical]=exp_doc_historical;Historical
+    RouteContainers[historical/page-history/*]=exp_doc_historical;{page_title}
+
+- A rule is `<shell pattern of the path>;<container path>;<name pattern>[;<condition>[;<current page id>]]`; the first
+  that matches wins.
+- The patterns take `{key}` values: `RouteMeta[<key>]` (a regular expression on the page's HTML, its first group),
+  `{title}` (the `<title>` without `TitleSuffixPatterns[]`) and `{path}`; `{a|b}` is the first that is not empty.
+- The condition is `<key>!=<key>` or `<key>=<key>`, e.g. `latest_id!=page_id` for an old version.
+- The current page id fills the field `history_of`: the object of the current page with that page id (map it to an
+  object relation, `AttributeMap[*/history_of]=history_of`). A container of one page's views gets it as well.
+- `RouteContainers[<container path>]=<class>;<title pattern>` makes the containers, nested by their paths; `*` stands
+  for one folder of any name. A container's title takes the values of its first page.
+- `./console exp:static-import:route --type=<label>` puts pages an earlier run imported where the rules send them today
+  (containers made, pages moved, renamed and related), without a run; what the next run must know goes into a state
+  patch (`state-patches/` in the type's work folder), merged by that run.
+
+## Sibling names
+
+No two pages of one name below one parent: `SiblingNames=unique` (the default) gives the later one
+`SiblingNameSuffix` (default `({n})`, a counter from 2; it may use `{page_id}` and the `RouteMeta[]` values, and gets
+the counter as well when it is taken too), `refuse` skips the page (failed, "needs review"), `warn` only reports it,
+`off` turns the check off. Each renaming is listed in the report's warnings, and counted as `renamed`.

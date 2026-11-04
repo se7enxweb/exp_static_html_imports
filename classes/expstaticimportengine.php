@@ -102,6 +102,14 @@ class expStaticImportEngine
     }
 
     /**
+     * @return expStaticImportTypeInterface the type of this import
+     */
+    public function type()
+    {
+        return $this->type;
+    }
+
+    /**
      * @param string $label
      * @return string var/<site>/static-import/<label>
      */
@@ -127,6 +135,8 @@ class expStaticImportEngine
                                    'removed' => 0 ), isset( $run['counts'] ) ? $run['counts'] : array() ),
                                'flagged' => array(), 'failed' => array(), 'removed' => array(), 'byline_failures' => array(), 'warnings' => array() );
         $this->audit( 'system.staticimport_run.start', array( 'run' => $run['id'], 'resumed' => $resume ) );
+        if ( !$this->options['dry_run'] )
+            $this->applyStatePatches();
 
         $user = $this->actAs();
         $deferred = $this->deferWork();
@@ -313,6 +323,313 @@ class expStaticImportEngine
             $out['hidden'][] = $line;
         }
         return $out;
+    }
+
+    /**
+     * What a console step changed while a run may have been going on (exp:static-import:route renames and moves
+     * pages) is written to <work folder>/state-patches/*.json, never into the state file, which that run would save
+     * over. The next run merges each patch into the state, saves it, and renames the patch to .applied.
+     */
+    protected function applyStatePatches()
+    {
+        $files = glob( $this->workDir . '/state-patches/*.json' ) ?: array();
+        if ( !$files )
+            return;
+        sort( $files );
+        foreach ( $files as $file )
+        {
+            $patch = json_decode( (string)file_get_contents( $file ), true );
+            foreach ( is_array( $patch ) ? $patch : array() as $path => $values )
+                if ( is_array( $values ) )
+                    $this->state->setPage( (string)$path, $values );
+        }
+        $this->state->save();
+        foreach ( $files as $file )
+            rename( $file, $file . '.applied' );
+        $this->report['warnings'][] = count( $files ) . ' state patch(es) of console steps applied';
+    }
+
+    /**
+     * @param array $patch path => values merged into the page's state entry by the next run
+     * @param string $what a word for the file name
+     */
+    protected function writeStatePatch( array $patch, $what )
+    {
+        if ( !$patch )
+            return '';
+        $dir = $this->workDir . '/state-patches';
+        if ( !is_dir( $dir ) )
+            mkdir( $dir, 0775, true );
+        $file = $dir . '/' . date( 'Ymd-His' ) . '-' . preg_replace( '/[^a-z0-9-]/i', '', $what ) . '-' . getmypid() . '.json';
+        file_put_contents( $file, json_encode( $patch, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE ) );
+        return $file;
+    }
+
+    /**
+     * Puts the pages an earlier run imported where RouteRules[] send them today (exp:static-import:route): the
+     * containers of RouteContainers[] are made (with the remote ids a run gives them), each routed page moves into
+     * its container, takes its own name (unique below the container) and its relation to the current page
+     * (history_of), and is shown again if an earlier step hid it. The state file is never written: what the next run
+     * must know (the new written hash of a renamed page) goes to a state patch. Safe while a run is going on.
+     *
+     * @param bool $dryRun only count
+     * @return array the counts and the lists
+     */
+    public function applyRoutes( $dryRun = false )
+    {
+        $this->options['pull'] = false;
+        $this->options['dry_run'] = (bool)$dryRun;
+        $this->report = array( 'counts' => array(), 'warnings' => array() );
+        $this->source = $this->prepareSource();
+        $paths = $this->type->discover( $this->source );
+        if ( method_exists( $this->type, 'setKnownPaths' ) )
+            $this->type->setKnownPaths( $paths );
+        $user = $this->actAs();
+        $root = $this->parentNode();
+        $countChildren = function ( $node ) { return (int)eZDB::instance()->arrayQuery( "SELECT COUNT(*) AS n FROM ezcontentobject_tree WHERE parent_node_id = " . (int)$node )[0]['n']; };
+        $out = array( 'root_children_before' => $countChildren( $root ), 'containers_created' => 0, 'containers' => 0, 'routed' => 0, 'moved' => 0,
+                      'renamed' => 0, 'shown' => 0, 'related' => 0, 'not_imported' => 0, 'families' => array(), 'patch' => '' );
+        $routes = method_exists( $this->type, 'routes' ) ? $this->type->routes() : array();
+        // the containers, parents first
+        $containerNodes = array();
+        // only the route containers (the other group pages are the next run's)
+        $wanted = array();
+        foreach ( $routes as $route )
+            for ( $dir = $route['container']; $dir !== '' && $dir !== './'; $dir = dirname( rtrim( $dir, '/' ) ) === '.' ? '' : dirname( rtrim( $dir, '/' ) ) . '/' )
+                $wanted[$dir] = true;
+        $groups = array_values( array_filter( $paths, function ( $p ) use ( $wanted ) { return isset( $wanted[$p] ); } ) );
+        foreach ( $groups as $group )
+        {
+            $page = $this->type->map( $this->type->parse( $this->source, $group ) );
+            $parent = $page['parent_path'] !== '' ? ( isset( $containerNodes[$page['parent_path']] ) ? $containerNodes[$page['parent_path']] : $this->state->nodeOf( $page['parent_path'] ) ) : $root;
+            if ( !$parent )
+                continue;
+            $remoteID = self::remoteID( $this->label, $group );
+            $object = eZContentObject::fetchByRemoteID( $remoteID );
+            $out['containers']++;
+            if ( !$object && !$dryRun )
+            {
+                $attributes = array();
+                foreach ( $page['attributes'] as $identifier => $value )
+                    if ( $value !== '{body}' && $value !== '{hash}' && strpos( (string)$value, '{' ) !== 0 )
+                        $attributes[$identifier] = $value;
+                $object = eZContentFunctions::createAndPublishObject( array( 'parent_node_id' => $parent, 'class_identifier' => $page['class'],
+                    'creator_id' => (int)$user->attribute( 'contentobject_id' ), 'remote_id' => $remoteID, 'attributes' => $attributes,
+                    'language' => $this->language(), 'section_id' => $this->sectionFor( $page ) ) );
+                if ( $object )
+                    $out['containers_created']++;
+            }
+            if ( $object instanceof eZContentObject )
+            {
+                $containerNodes[$group] = (int)$object->attribute( 'main_node_id' );
+                if ( !empty( $page['history_of'] ) && !$dryRun )
+                    $out['related'] += $this->setRelation( $object, 'history_of', $this->objectByPageId( $page['history_of'] ) );
+            }
+        }
+        // the routed pages
+        $patch = array();
+        $n = 0;
+        foreach ( $routes as $path => $route )
+        {
+            $family = preg_replace( '/[0-9a-f]{4}(-)?\.html$|\.html$/', '', basename( $path ) );
+            $out['families'][$family] = ( isset( $out['families'][$family] ) ? $out['families'][$family] : 0 ) + 1;
+            $entry = $this->state->page( $path );
+            $object = eZContentObject::fetchByRemoteID( self::remoteID( $this->label, $path ) );
+            if ( !$object instanceof eZContentObject )
+            {
+                $out['not_imported']++;
+                continue;
+            }
+            if ( ++$n % 50 === 0 )
+                eZContentObject::clearCache();
+            $out['routed']++;
+            $container = isset( $containerNodes[$route['container']] ) ? $containerNodes[$route['container']] : 0;
+            $node = $object->attribute( 'main_node' );
+            if ( !$container || !$node instanceof eZContentObjectTreeNode )
+                continue;
+            if ( (int)$node->attribute( 'parent_node_id' ) !== $container )
+            {
+                $out['moved']++;
+                if ( !$dryRun )
+                    eZContentObjectTreeNodeOperations::move( (int)$node->attribute( 'node_id' ), $container );
+            }
+            if ( (int)$node->attribute( 'is_hidden' ) && !expStaticImportHtmlType::matchesAny( $path, $this->rules->getList( 'HiddenPaths' ) ) )
+            {
+                $out['shown']++;
+                if ( !$dryRun )
+                    eZContentObjectTreeNode::unhideSubTree( $node );
+            }
+            $name = $this->uniqueSiblingName( $container, $route['name'], (int)$object->attribute( 'id' ), array( 'path' => $path, 'route_meta' => $route['meta'], 'meta' => array( 'page_id' => isset( $route['meta']['page_id'] ) ? $route['meta']['page_id'] : '' ) ) );
+            if ( $name !== null && $name !== (string)$object->attribute( 'name' ) )
+            {
+                $out['renamed']++;
+                if ( !$dryRun )
+                {
+                    $titles = array();
+                    foreach ( $this->rules->getHash( 'AttributeMap' ) as $key => $field )
+                    {
+                        list( $mapClass, $identifier ) = array_pad( explode( '/', (string)$key, 2 ), 2, '' );
+                        if ( $field === 'title' && ( $mapClass === '*' || $mapClass === (string)$object->attribute( 'class_identifier' ) ) && isset( $object->dataMap()[$identifier] ) )
+                            $titles[$identifier] = $name;
+                    }
+                    if ( $titles )
+                        eZContentFunctions::updateAndPublishObject( $object, array( 'attributes' => $titles, 'language' => $this->language() ) );
+                }
+            }
+            if ( !$dryRun && $route['current'] !== '' )
+                $out['related'] += $this->setRelation( eZContentObject::fetch( (int)$object->attribute( 'id' ) ), 'history_of', $this->objectByPageId( $route['current'] ) );
+            if ( !$dryRun && $entry && !empty( $entry['written_fields'] ) )
+            {
+                eZContentObject::clearCache( array( (int)$object->attribute( 'id' ) ) );
+                $patch[$path] = array( 'written_hash' => $this->contentHash( eZContentObject::fetch( (int)$object->attribute( 'id' ) ), (array)$entry['written_fields'] ) );
+            }
+        }
+        if ( !$dryRun )
+        {
+            $out['patch'] = $this->writeStatePatch( $patch, 'route' );
+            eZContentCacheManager::clearAllContentCache( true );
+        }
+        $out['root_children_after'] = $countChildren( $root );
+        $out['warnings'] = array_slice( $this->report['warnings'], 0, 50 );
+        return $out;
+    }
+
+    /**
+     * Sets an object relation attribute of the published version to an object, with the object relation.
+     *
+     * @return int 1 when it was set, 0 when it held that already or cannot
+     */
+    protected function setRelation( $object, $identifier, $toID )
+    {
+        if ( !$object instanceof eZContentObject || !$toID )
+            return 0;
+        $dataMap = $object->dataMap();
+        $attribute = isset( $dataMap[$identifier] ) ? $dataMap[$identifier] : $this->createAttribute( $object, $identifier );
+        if ( !$attribute || (int)$attribute->attribute( 'data_int' ) === (int)$toID )
+            return 0;
+        $attribute->setAttribute( 'data_int', (int)$toID );
+        $attribute->setAttribute( 'sort_key_int', (int)$toID );
+        $attribute->store();
+        $object->addContentObjectRelation( (int)$toID, (int)$object->attribute( 'current_version' ), (int)$attribute->attribute( 'contentclassattribute_id' ) );
+        return 1;
+    }
+
+    /** @var array page id => object id (0: none), objectByPageId()'s memory */
+    protected $pageIdObjects = array();
+
+    /** @var array parent node => array( lower-case name => object id ), uniqueSiblingName()'s memory */
+    protected $siblingNames = array();
+
+    /**
+     * The object of the current page with a source page id (the attribute AttributeMap[] gives the field page_id),
+     * never a routed copy, version or view of it (RouteRules[]).
+     *
+     * @param string $pageId
+     * @return int 0 when there is none
+     */
+    public function objectByPageId( $pageId )
+    {
+        $pageId = (string)$pageId;
+        if ( !empty( $this->pageIdObjects[$pageId] ) )
+            return $this->pageIdObjects[$pageId];
+        // the type knows the current page of the id from the source (RouteMeta[page_id]): its object
+        if ( method_exists( $this->type, 'pathOfPageId' ) && ( $path = $this->type->pathOfPageId( $pageId ) ) !== '' )
+        {
+            if ( isset( $this->state->data['pages'][$path]['duplicate_of'] ) && $this->state->data['pages'][$path]['duplicate_of'] !== '' )
+                $path = $this->state->data['pages'][$path]['duplicate_of'];
+            $object = eZContentObject::fetchByRemoteID( self::remoteID( $this->label, $path ) );
+            if ( $object instanceof eZContentObject )
+                return $this->pageIdObjects[$pageId] = (int)$object->attribute( 'id' );
+        }
+        $identifiers = array();
+        foreach ( $this->rules->getHash( 'AttributeMap' ) as $key => $field )
+            if ( $field === 'page_id' && strpos( (string)$key, '/' ) !== false )
+                $identifiers[] = substr( (string)$key, strpos( (string)$key, '/' ) + 1 );
+        if ( !$identifiers || !ctype_digit( $pageId ) )
+            return 0;
+        $db = eZDB::instance();
+        $list = "'" . implode( "','", array_map( array( $db, 'escapeString' ), array_unique( $identifiers ) ) ) . "'";
+        $rows = $db->arrayQuery( "SELECT o.id, o.remote_id FROM ezcontentobject_attribute a
+                                  JOIN ezcontentclass_attribute ca ON ca.id = a.contentclassattribute_id AND ca.version = 0 AND ca.identifier IN ( $list )
+                                  JOIN ezcontentobject o ON o.id = a.contentobject_id AND o.current_version = a.version AND o.status = 1
+                                  WHERE a.data_text = '" . $db->escapeString( $pageId ) . "'
+                                  AND o.remote_id LIKE '" . $db->escapeString( 'staticimport-' . $this->label . '-' ) . "%'" );
+        $routed = array();
+        if ( method_exists( $this->type, 'routes' ) )
+            foreach ( array_keys( $this->type->routes() ) as $path )
+                $routed[self::remoteID( $this->label, $path )] = true;
+        $found = 0;
+        foreach ( $rows as $row )
+            if ( !isset( $routed[$row['remote_id']] ) )
+            {
+                $found = (int)$row['id'];
+                break;
+            }
+        return $this->pageIdObjects[$pageId] = $found;
+    }
+
+    /**
+     * The spec check of sibling names (SiblingNames: unique, the default, refuse or warn): a page may not take the
+     * name of another object below the same parent. unique gives it SiblingNameSuffix (default " ({n})"; {n} counts
+     * from 2, the page's RouteMeta[] values and {page_id} may be used) until it is free; every renaming is reported.
+     *
+     * @param int $parentNode
+     * @param string $name
+     * @param int $objectID the page's own object (0 for a new one)
+     * @param array $page
+     * @return string|null the name to use, null when the page is refused
+     */
+    protected function uniqueSiblingName( $parentNode, $name, $objectID, array $page )
+    {
+        $mode = strtolower( (string)$this->rules->get( 'SiblingNames', 'unique' ) );
+        $parentNode = (int)$parentNode;
+        if ( $mode === 'off' || !$parentNode || trim( (string)$name ) === '' )
+            return $name;
+        if ( !isset( $this->siblingNames[$parentNode] ) )
+        {
+            $this->siblingNames[$parentNode] = array();
+            foreach ( (array)eZDB::instance()->arrayQuery( "SELECT o.id, o.name FROM ezcontentobject_tree t JOIN ezcontentobject o ON o.id = t.contentobject_id
+                                                            WHERE t.parent_node_id = $parentNode AND t.node_id <> t.parent_node_id" ) as $row )
+            {
+                $key = mb_strtolower( trim( (string)$row['name'] ), 'UTF-8' );
+                if ( !isset( $this->siblingNames[$parentNode][$key] ) )
+                    $this->siblingNames[$parentNode][$key] = (int)$row['id'];
+            }
+            // the page's own object counts under its own name only
+        }
+        $taken = function ( $candidate ) use ( $parentNode, $objectID )
+        {
+            $key = mb_strtolower( trim( $candidate ), 'UTF-8' );
+            return isset( $this->siblingNames[$parentNode][$key] ) && $this->siblingNames[$parentNode][$key] !== (int)$objectID;
+        };
+        $result = $name;
+        if ( $taken( $name ) )
+        {
+            if ( $mode === 'refuse' )
+                return null;
+            if ( $mode === 'warn' )
+            {
+                $this->report['warnings'][] = "{$page['path']}: the name '$name' is taken below node $parentNode";
+                return $name;
+            }
+            // (an INI value loses its leading space: the suffix always starts with one)
+            $suffix = ' ' . ltrim( (string)$this->rules->get( 'SiblingNameSuffix', '({n})' ) );
+            $values = ( isset( $page['route_meta'] ) ? (array)$page['route_meta'] : array() ) + array( 'page_id' => isset( $page['meta']['page_id'] ) ? $page['meta']['page_id'] : '' );
+            for ( $n = 2; $n < 10000; $n++ )
+            {
+                $candidate = $name . expStaticImportHtmlType::fill( $suffix, $values + array( 'n' => (string)$n ) );
+                if ( !$taken( $candidate ) )
+                    break;
+                // a suffix without {n} that is taken already gets the counter too
+                if ( strpos( $suffix, '{n}' ) === false )
+                    $suffix .= ' ({n})';
+            }
+            $result = $candidate;
+            $this->report['counts']['renamed'] = ( isset( $this->report['counts']['renamed'] ) ? $this->report['counts']['renamed'] : 0 ) + 1;
+            $this->report['warnings'][] = "{$page['path']}: named '$result', '$name' is taken below node $parentNode";
+        }
+        $this->siblingNames[$parentNode][mb_strtolower( trim( $result ), 'UTF-8' )] = $objectID ?: -1;
+        return $result;
     }
 
     /** the byline fields AttributeMap[] may give an attribute, and what each holds */
@@ -851,12 +1168,40 @@ class expStaticImportEngine
         }
         $attributes = array();
         foreach ( $page['attributes'] as $identifier => $value )
+        {
             $attributes[$identifier] = $value === '{body}' ? $xml : ( $value === '{hash}' ? $sourceHash : $this->contributorValue( $value, $page, $user ) );
+            // {page:<page id>}: the object of the current page with that page id (history_of); one not imported yet
+            // is resolved in the links phase
+            if ( is_string( $value ) && preg_match( '/^\{page:(\w+)\}$/', $value, $m ) )
+            {
+                $attributes[$identifier] = (string)$this->objectByPageId( $m[1] );
+                if ( $attributes[$identifier] === '0' )
+                {
+                    $attributes[$identifier] = '';
+                    $unresolved[] = 'page:' . $m[1];
+                }
+            }
+        }
         foreach ( isset( $page['byline_failures'] ) ? (array)$page['byline_failures'] : array() as $line )
             $this->report['byline_failures'][] = array( 'path' => $path, 'line' => $line );
 
         $remoteID = self::remoteID( $this->label, $path );
         $object = eZContentObject::fetchByRemoteID( $remoteID );
+        // the spec check: no two pages with the same name below one parent (SiblingNames=unique renames the later
+        // one with SiblingNameSuffix, refuse skips it, warn only reports it)
+        $unique = $this->isRootPage( $path ) ? $page['title'] : $this->uniqueSiblingName( $parentNode, $page['title'], $object instanceof eZContentObject ? (int)$object->attribute( 'id' ) : 0, $page );
+        if ( $unique === null )
+        {
+            $this->fail( $path, "a page named '{$page['title']}' is below node $parentNode already (SiblingNames=refuse)", $page );
+            return;
+        }
+        if ( $unique !== $page['title'] )
+            foreach ( $this->rules->getHash( 'AttributeMap' ) as $key => $field )
+            {
+                list( $mapClass, $identifier ) = array_pad( explode( '/', (string)$key, 2 ), 2, '' );
+                if ( $field === 'title' && ( $mapClass === '*' || $mapClass === $page['class'] ) && isset( $attributes[$identifier] ) )
+                    $attributes[$identifier] = $unique;
+            }
         $isRoot = $this->isRootPage( $path ) && ( $root = $this->rootObject() );
         if ( $isRoot )
         {
@@ -1041,7 +1386,8 @@ class expStaticImportEngine
         // only when a link it could not resolve can be resolved now
         $resolvable = false;
         foreach ( isset( $entry['unresolved'] ) ? (array)$entry['unresolved'] : array() as $target )
-            if ( $this->state->nodeOf( $target ) || $this->state->asset( $target ) )
+            if ( $this->state->nodeOf( $target ) || $this->state->asset( $target )
+                 || ( strpos( (string)$target, 'page:' ) === 0 && $this->objectByPageId( substr( (string)$target, 5 ) ) ) )
             {
                 $resolvable = true;
                 break;

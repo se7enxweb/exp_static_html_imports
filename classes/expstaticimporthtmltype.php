@@ -62,6 +62,27 @@ abstract class expStaticImportHtmlType implements expStaticImportTypeInterface
     /** @var array group path ("<folder>/") => its title */
     protected $groups = array();
 
+    /** @var array group path => its class (a route container's) */
+    protected $groupClasses = array();
+
+    /** @var array group path => the values of its first page (RouteMeta[]), for its title and relation */
+    protected $groupMeta = array();
+
+    /** @var array path => array( 'container' => ..., 'name' => ..., 'meta' => array, 'current' => page id ) */
+    protected $routes = array();
+
+    /** @var array page id => the path of the current page with that id (pages whose breadcrumb is read) */
+    protected $pageIdPaths = array();
+
+    /**
+     * @param string $pageId
+     * @return string the path of the current page with that page id, '' when unknown
+     */
+    public function pathOfPageId( $pageId )
+    {
+        return isset( $this->pageIdPaths[(string)$pageId] ) ? $this->pageIdPaths[(string)$pageId] : '';
+    }
+
     public function configure( expStaticImportRules $rules )
     {
         $this->rules = $rules;
@@ -124,6 +145,12 @@ abstract class expStaticImportHtmlType implements expStaticImportTypeInterface
         $titleSelector = trim( (string)$this->rules->get( 'GroupTitleSelector', '' ) );
         $known = array_fill_keys( $paths, true );
         $folderTitles = array();
+        $this->pageIdPaths = array();
+        $routeMeta = $this->rules->getHash( 'RouteMeta' );
+        $idPattern = isset( $routeMeta['page_id'] ) ? (string)$routeMeta['page_id'] : '';
+        $routedPatterns = array();
+        foreach ( $this->rules->getList( 'RouteRules' ) as $line )
+            $routedPatterns[] = trim( strtok( $line, ';' ) );
         foreach ( $paths as $path )
         {
             $read = $selector !== '' && ( !$crumbPaths || self::matchesAny( $path, $crumbPaths ) );
@@ -133,6 +160,9 @@ abstract class expStaticImportHtmlType implements expStaticImportTypeInterface
             $html = @file_get_contents( rtrim( $source, '/' ) . '/' . $path );
             if ( !is_string( $html ) || $html === '' || $this->isBinary( $html ) )
                 continue;
+            // the page id of a page whose breadcrumb is read (RouteMeta[page_id]): the current page of its copies
+            if ( $idPattern !== '' && @preg_match( $idPattern, $html, $im ) && isset( $im[1] ) && !isset( $this->pageIdPaths[$im[1]] ) && !self::matchesAny( $path, $routedPatterns ) && !$this->isDuplicateCandidate( $path ) )
+                $this->pageIdPaths[$im[1]] = $path;
             $doc = expStaticImportDom::load( $html );
             if ( $read )
             {
@@ -169,6 +199,7 @@ abstract class expStaticImportHtmlType implements expStaticImportTypeInterface
                 $paths[] = $folder . '/';
             }
         }
+        $paths = $this->readRoutes( $source, $paths );
         // a breadcrumb that leads round in a circle (A below B below A) is not followed
         $this->known = array_fill_keys( $paths, true );
         foreach ( array_keys( $this->breadcrumbParents ) as $path )
@@ -185,6 +216,138 @@ abstract class expStaticImportHtmlType implements expStaticImportTypeInterface
             }
         }
         return $paths;
+    }
+
+    /**
+     * RouteRules[]: a family of pages goes into a container of its own, with a name of its own, instead of the place
+     * its path or breadcrumb would give it (e.g. Confluence's hundreds of "Page History" views, which would
+     * otherwise be same-name siblings). Each rule is
+     *   <shell pattern of the path>;<container path>;<name pattern>[;<condition>[;<current page id>]]
+     * The patterns take {<key>} values of RouteMeta[<key>]=<regular expression on the page's HTML, first group>,
+     * {title} (the page's <title> without TitleSuffixPatterns[]) and {path}; {a|b} is the first that is not empty.
+     * The condition is "<key>!=<key>" or "<key>=<key>" (e.g. latest_id!=page_id: an old version). The current page id
+     * is the page id (source_page_id) of the page this one is a copy, version or view of: it fills the field
+     * history_of. The first rule that matches wins.
+     * RouteContainers[<container path>]=<class>;<title pattern> makes the containers, each a group page (a path
+     * ending in "/"), nested by their paths; a key with * stands for one folder of any name (one container per
+     * original page: "historical/page-history/*\/"). A container's title takes the values of its first page.
+     *
+     * @param string $source
+     * @param array $paths
+     * @return array the paths, with the containers added
+     */
+    protected function readRoutes( $source, array $paths )
+    {
+        $this->routes = $this->groupClasses = $this->groupMeta = array();
+        $rules = array();
+        foreach ( $this->rules->getList( 'RouteRules' ) as $line )
+        {
+            $parts = array_map( 'trim', explode( ';', $line ) );
+            if ( count( $parts ) >= 3 && $parts[0] !== '' && $parts[1] !== '' )
+                $rules[] = array_pad( $parts, 5, '' );
+        }
+        if ( !$rules )
+            return $paths;
+        $metaRules = $this->rules->getHash( 'RouteMeta' );
+        $containers = $this->rules->getHash( 'RouteContainers' );
+        foreach ( $paths as $path )
+        {
+            $html = null;
+            foreach ( $rules as $rule )
+            {
+                if ( !self::matches( $path, $rule[0] ) )
+                    continue;
+                if ( $html === null )
+                {
+                    $html = (string)@file_get_contents( rtrim( $source, '/' ) . '/' . $path );
+                    $meta = array( 'path' => $path, 'title' => '' );
+                    foreach ( $metaRules as $key => $regex )
+                        $meta[$key] = @preg_match( $regex, $html, $m ) && isset( $m[1] ) ? trim( html_entity_decode( $m[1], ENT_QUOTES, 'UTF-8' ) ) : '';
+                    if ( preg_match( '/<title>([^<]*)<\/title>/i', $html, $t ) )
+                    {
+                        $meta['title'] = trim( html_entity_decode( $t[1], ENT_QUOTES, 'UTF-8' ) );
+                        foreach ( $this->rules->getList( 'TitleSuffixPatterns' ) as $pattern )
+                            $meta['title'] = trim( (string)@preg_replace( $pattern, '', $meta['title'] ) );
+                    }
+                }
+                if ( $rule[3] !== '' && !self::condition( $rule[3], $meta ) )
+                    continue;
+                $container = rtrim( self::fill( $rule[1], $meta ), '/' ) . '/';
+                $name = trim( self::fill( $rule[2], $meta ) );
+                if ( $container === '/' || $name === '' || strpos( $container, '{' ) !== false )
+                    continue;
+                $this->routes[$path] = array( 'container' => $container, 'name' => $name, 'meta' => $meta,
+                                              'current' => $rule[4] !== '' ? trim( self::fill( $rule[4], $meta ) ) : '' );
+                // the container and the containers above it
+                for ( $dir = $container; $dir !== '/' && $dir !== './' && $dir !== ''; $dir = ( dirname( rtrim( $dir, '/' ) ) === '.' ? '' : dirname( rtrim( $dir, '/' ) ) . '/' ) )
+                {
+                    if ( isset( $this->groups[$dir] ) )
+                        continue;
+                    foreach ( $containers as $key => $value )
+                    {
+                        if ( !self::matches( rtrim( $dir, '/' ), rtrim( (string)$key, '/' ) ) )
+                            continue;
+                        list( $class, $title ) = array_pad( array_map( 'trim', explode( ';', (string)$value, 2 ) ), 2, '' );
+                        $title = trim( self::fill( $title, $meta ) );
+                        $this->groups[$dir] = $title !== '' ? $title : basename( rtrim( $dir, '/' ) );
+                        if ( $class !== '' )
+                            $this->groupClasses[$dir] = $class;
+                        // a container of one original page is a history of that page too
+                        $this->groupMeta[$dir] = $dir === $container ? $this->routes[$path]['current'] : '';
+                        $paths[] = $dir;
+                        break;
+                    }
+                }
+                break;
+            }
+        }
+        return $paths;
+    }
+
+    /**
+     * @param string $pattern with {key} and {a|b} placeholders
+     * @param array $values
+     * @return string
+     */
+    public static function fill( $pattern, array $values )
+    {
+        return preg_replace_callback( '/\{([a-z0-9_|]+)\}/i', function ( $m ) use ( $values ) {
+            foreach ( explode( '|', $m[1] ) as $key )
+                if ( isset( $values[$key] ) && trim( (string)$values[$key] ) !== '' )
+                    return trim( (string)$values[$key] );
+            return '';
+        }, (string)$pattern );
+    }
+
+    /**
+     * @param string $condition "<key>!=<key>" or "<key>=<key>"
+     * @param array $values
+     * @return bool
+     */
+    public static function condition( $condition, array $values )
+    {
+        if ( !preg_match( '/^\s*(\w+)\s*(!=|=)\s*(\w+)\s*$/', $condition, $m ) )
+            return false;
+        $a = isset( $values[$m[1]] ) ? (string)$values[$m[1]] : '';
+        $b = isset( $values[$m[3]] ) ? (string)$values[$m[3]] : '';
+        return $m[2] === '=' ? $a === $b : $a !== $b;
+    }
+
+    /**
+     * @param string $path
+     * @return array|null the route of a page (RouteRules[])
+     */
+    public function route( $path )
+    {
+        return isset( $this->routes[$path] ) ? $this->routes[$path] : null;
+    }
+
+    /**
+     * @return array path => route, every routed page
+     */
+    public function routes()
+    {
+        return $this->routes;
     }
 
     /**
@@ -244,9 +407,11 @@ abstract class expStaticImportHtmlType implements expStaticImportTypeInterface
             'bylines' => array(),
             'byline_failures' => array(),
         );
-        $class = trim( (string)$this->rules->get( 'GroupClass', '' ) );
+        $class = isset( $this->groupClasses[$path] ) ? $this->groupClasses[$path] : trim( (string)$this->rules->get( 'GroupClass', '' ) );
         if ( $class !== '' )
             $page['class_fixed'] = $class;
+        if ( !empty( $this->groupMeta[$path] ) )
+            $page['history_of'] = (string)$this->groupMeta[$path];
         return $page;
     }
 
@@ -452,6 +617,14 @@ abstract class expStaticImportHtmlType implements expStaticImportTypeInterface
         $page['class'] = !empty( $page['class_fixed'] ) ? (string)$page['class_fixed'] : $class;
         $page['parent_path'] = array_key_exists( 'parent_fixed', $page ) ? (string)$page['parent_fixed'] : $this->parentPath( $page['path'] );
         $page['priority'] = isset( $page['priority'] ) ? (int)$page['priority'] : 0;
+        // a routed page (RouteRules[]): its container and its own name, and the page it is a copy or view of
+        if ( !array_key_exists( 'parent_fixed', $page ) && ( $route = $this->route( $page['path'] ) ) )
+        {
+            $page['title'] = $route['name'];
+            $page['route_meta'] = $route['meta'];
+            if ( $route['current'] !== '' )
+                $page['history_of'] = $route['current'];
+        }
 
         $fields = $this->fields( $page );
         $attributes = array();
@@ -499,6 +672,8 @@ abstract class expStaticImportHtmlType implements expStaticImportTypeInterface
             'maintainers' => !empty( $page['bylines']['maintainers']['names'] ) ? '{contributors:maintainers}' : '',
             // every person the page names (writer, updater, maintainers, comment authors), each once
             'contributors' => !empty( $page['bylines'] ) && expStaticImportByline::people( (array)$page['bylines'] ) ? '{contributors:*}' : '',
+            // the current page a historical copy, version or view belongs to (RouteRules[]), by its page id
+            'history_of' => !empty( $page['history_of'] ) ? '{page:' . $page['history_of'] . '}' : '',
             'labels_tags' => self::tagsString( isset( $meta['labels'] ) ? (array)$meta['labels'] : array(), (string)$this->rules->get( 'TagParent', '0' ),
                                                (string)$this->rules->get( 'Language', 'eng-US' ) ),
             'metadata_xml' => self::metadataXml( $page['title'], isset( $meta['keywords'] ) ? (array)$meta['keywords'] : array(),
@@ -550,6 +725,8 @@ abstract class expStaticImportHtmlType implements expStaticImportTypeInterface
      */
     public function parentPath( $path )
     {
+        if ( isset( $this->routes[$path] ) )
+            return $this->routes[$path]['container'];
         if ( isset( $this->breadcrumbParents[$path] ) )
             return $this->breadcrumbParents[$path];
         return $this->folderParent( $path );

@@ -30,6 +30,17 @@ class expStaticImportTypeSitemapCrawl extends expStaticImportHtmlType
     /** @var array|null Disallow prefixes */
     protected $disallow = null;
 
+    /** @var array the requests sent: array( url, time ) */
+    protected $requests = array();
+
+    /**
+     * @return array the requests this type sent, in order, each array( 'url' => ..., 'time' => microtime )
+     */
+    public function requests()
+    {
+        return $this->requests;
+    }
+
     public function identifier()
     {
         return 'sitemap-crawl';
@@ -46,8 +57,13 @@ class expStaticImportTypeSitemapCrawl extends expStaticImportHtmlType
     public function discover( $source )
     {
         $base = rtrim( $source, '/' ) . '/';
-        $sitemap = (string)$this->rules->get( 'SitemapPath', 'sitemap.xml' );
-        $urls = $this->sitemapUrls( $base . ltrim( $sitemap, '/' ), 0 );
+        $sitemap = trim( (string)$this->rules->get( 'SitemapPath', 'sitemap.xml' ) );
+        // the sitemap (SitemapPath below the base, or a full URL; "none" for a site without one) and the pages of
+        // Urls[] (full URLs, or paths below the base), for a site without a sitemap or a crawl of a few pages
+        $urls = $sitemap === '' || $sitemap === 'none' ? array()
+              : $this->sitemapUrls( preg_match( '#^https?://#i', $sitemap ) ? $sitemap : $base . ltrim( $sitemap, '/' ), 0 );
+        foreach ( $this->rules->getList( 'Urls' ) as $url )
+            $urls[] = preg_match( '#^https?://#i', $url ) ? $url : $base . ltrim( $url, '/' );
         $paths = array();
         foreach ( $urls as $url )
         {
@@ -141,7 +157,9 @@ class expStaticImportTypeSitemapCrawl extends expStaticImportHtmlType
         if ( $this->disallow === null )
         {
             $this->disallow = array();
-            $robots = $this->fetch( $base . 'robots.txt' );
+            // robots.txt is the host's, at its root, whatever the base path of the import
+            $parts = parse_url( $base );
+            $robots = $this->fetch( $parts['scheme'] . '://' . $parts['host'] . ( isset( $parts['port'] ) ? ':' . $parts['port'] : '' ) . '/robots.txt' );
             $agent = strtolower( $this->userAgent() );
             $applies = false;
             foreach ( preg_split( '/\r?\n/', (string)$robots ) as $line )
@@ -181,6 +199,7 @@ class expStaticImportTypeSitemapCrawl extends expStaticImportHtmlType
         if ( $wait > 0 )
             usleep( (int)( $wait * 1000000 ) );
         $this->lastRequest = microtime( true );
+        $this->requests[] = array( 'url' => $url, 'time' => $this->lastRequest );
         $context = stream_context_create( array( 'http' => array(
             'method' => 'GET',
             'header' => 'User-Agent: ' . $this->userAgent() . "\r\nAccept: text/html,application/xml;q=0.9,*/*;q=0.5\r\n",
