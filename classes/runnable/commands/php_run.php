@@ -40,10 +40,19 @@ class Run extends \Exponential\Runnable\Command
             'use-modules' => true,
             'use-extensions' => true
         ) );
-        $labels = array_keys( \expStaticImportRegistry::types() );
+        // the type may be given as --<label> (--doc-html): the types are known only after the start-up has read the
+        // extensions' settings, so a flag that is none of the options below becomes --type=<label> before it
+        $known = array( 'type', 'source', 'dry-run', 'apply-removals', 'path', 'limit', 'batch', 'restart', 'no-pull',
+                        'parent-node', 'user', 'format', 'help', 'siteaccess', 'debug', 'quiet', 'verbose', 'allow-root-user',
+                        'no-colors', 'colors', 'logfiles', 'no-logfiles', 'login', 'password' );
+        if ( isset( $_SERVER['argv'] ) )
+        {
+            foreach ( $_SERVER['argv'] as $i => $arg )
+                if ( $i > 0 && preg_match( '/^--([a-z][a-z0-9-]*)$/', $arg, $m ) && !in_array( $m[1], $known, true ) )
+                    $_SERVER['argv'][$i] = '--type=' . $m[1];
+            $GLOBALS['argv'] = $_SERVER['argv'];
+        }
         $config = '[type:][source:][dry-run][apply-removals][path:*][limit:][batch:][restart][no-pull][parent-node:][user:][format:]';
-        foreach ( $labels as $label )
-            $config .= '[' . $label . ']';
         $options = $this->startup( $config, '', array(
             'type' => 'The import type', 'source' => 'The source folder or URL', 'dry-run' => 'Write nothing',
             'apply-removals' => 'Trash pages that left the source', 'path' => 'Only these paths', 'limit' => 'Only n pages',
@@ -51,10 +60,8 @@ class Run extends \Exponential\Runnable\Command
             'parent-node' => 'The parent node of the top pages', 'user' => 'The login to import as', 'format' => 'text or json',
         ) );
         $this->json = isset( $options['format'] ) && $options['format'] === 'json';
-        $type = !empty( $options['type'] ) ? (string)$options['type'] : '';
-        foreach ( $labels as $label )
-            if ( !empty( $options[$label] ) )
-                $type = $label;
+        $labels = array_keys( \expStaticImportRegistry::types() );
+        $type = !empty( $options['type'] ) ? ltrim( (string)$options['type'], '-' ) : '';
         if ( $type === '' )
             return $this->usage( 'no import type: give --type=<label> or one of --' . implode( ', --', $labels ) );
 
