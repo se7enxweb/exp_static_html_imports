@@ -77,8 +77,8 @@ class Links extends \Exponential\Runnable\Command
                 $this->output( sprintf( '  unresolved %6d  %s', $count, $form ) );
             foreach ( array_slice( $totals['unresolved_reasons'], 0, 10, true ) as $reason => $count )
                 $this->output( sprintf( '  reason     %6d  %s', $count, $reason ) );
-            $this->output( sprintf( 'PASS %d objects, %d pages changed: %d links, %d node links (%d rewritten now, %d to nodes that do not exist), %d anchors, %d external, %d mailto, %d ignored, %d unresolved on %d pages; %d baselines moved, %d edited pages changed%s',
-                                    $totals['objects'], $totals['pages_changed'], $totals['links'], $totals['node_links'], $totals['rewritten'], $totals['node_links_dead'],
+            $this->output( sprintf( 'PASS %d objects, %d pages changed: %d links, %d node links (%d rewritten now, %d retargeted, %d to nodes that do not exist), %d anchors, %d external, %d mailto, %d ignored, %d unresolved on %d pages; %d baselines moved, %d edited pages changed%s',
+                                    $totals['objects'], $totals['pages_changed'], $totals['links'], $totals['node_links'], $totals['rewritten'], $totals['retargeted'], $totals['node_links_dead'],
                                     $totals['anchors'], $totals['external'], $totals['mailto'], $totals['ignored'], $totals['unresolved'], $totals['pages_with_unresolved'],
                                     $totals['baselines_moved'], $totals['edited_pages_changed'], $totals['finished'] ? '' : ' (not finished: run again to resume)' ) );
         }

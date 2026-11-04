@@ -35,6 +35,9 @@ class expStaticImportLinkRewriter
     /** @var array node id => object id, every node there is */
     protected $nodes = array();
 
+    /** @var array node id => the node its links go to instead */
+    protected $retarget = array();
+
     /** @var array object id => its node ids */
     protected $nodesOfObject = array();
 
@@ -76,6 +79,10 @@ class expStaticImportLinkRewriter
             $this->nodes[(int)$row['node_id']] = (int)$row['contentobject_id'];
             $this->nodesOfObject[(int)$row['contentobject_id']][] = (int)$row['node_id'];
         }
+        // a node the state names for a path whose page is another node today (RootPage's earlier page, retired)
+        foreach ( $state->data['pages'] as $path => $entry )
+            if ( !empty( $entry['node_id'] ) && empty( $entry['duplicate_of'] ) && ( $now = $this->engine->pageNode( (string)$path ) ) && $now !== (int)$entry['node_id'] && isset( $this->nodes[$now] ) )
+                $this->retarget[(int)$entry['node_id']] = $now;
         $xmlAttributes = $sourceAttributes = array();
         foreach ( $db->arrayQuery( "SELECT id, identifier, data_type_string FROM ezcontentclass_attribute WHERE version = 0" ) as $row )
         {
@@ -341,6 +348,13 @@ class expStaticImportLinkRewriter
             {
                 $totals['links']++;
                 $node = (int)$link->getAttribute( 'node_id' );
+                if ( isset( $this->retarget[$node] ) )
+                {
+                    $node = $this->retarget[$node];
+                    $link->setAttribute( 'node_id', (string)$node );
+                    $changed = true;
+                    $totals['retargeted']++;
+                }
                 if ( isset( $this->nodes[$node] ) )
                 {
                     $totals['node_links']++;
@@ -424,7 +438,7 @@ class expStaticImportLinkRewriter
      */
     public static function emptyTotals()
     {
-        return array( 'objects' => 0, 'pages_changed' => 0, 'links' => 0, 'node_links' => 0, 'rewritten' => 0, 'node_links_dead' => 0, 'anchors' => 0,
+        return array( 'objects' => 0, 'pages_changed' => 0, 'links' => 0, 'node_links' => 0, 'rewritten' => 0, 'node_links_dead' => 0, 'retargeted' => 0, 'anchors' => 0,
                       'external' => 0, 'mailto' => 0, 'ignored' => 0, 'unresolved' => 0, 'pages_with_unresolved' => 0, 'baselines_moved' => 0,
                       'edited_pages_changed' => 0, 'xml_errors' => 0, 'unresolved_forms' => array(), 'unresolved_reasons' => array(), 'unresolved_targets' => array(), 'unresolved_examples' => array(),
                       'external_hosts' => array(), 'started' => '', 'finished' => '' );

@@ -2475,6 +2475,23 @@ class expStaticImportEngine
     }
 
     /**
+     * The node a link to a source path goes to: the top node for RootPage (the state may still name the page an
+     * earlier run made for it, retired since), else the state's page or media file (a duplicate: the page it
+     * duplicates), else the object the import made for the path (a group page or a container of a console step).
+     *
+     * @param string $path
+     * @return int 0 when the path is no imported page
+     */
+    public function pageNode( $path )
+    {
+        $path = (string)$path;
+        if ( $this->isRootPage( $path ) )
+            return (int)$this->parentNode();
+        $node = isset( $this->state->data['pages'][$path] ) || isset( $this->state->data['assets'][$path] ) ? $this->state->nodeOf( $path ) : 0;
+        return $node ?: $this->nodeByRemotePath( $path );
+    }
+
+    /**
      * @param string $path a source path (or a group page's path, ending in "/")
      * @return int the main node of the object the import made for it, 0 when none
      */
@@ -2547,11 +2564,7 @@ class expStaticImportEngine
         $engine = $this;
         $lower = null;
         $options = array(
-            'page' => function ( $path ) use ( $state, $engine ) {
-                $node = isset( $state->data['pages'][$path] ) || isset( $state->data['assets'][$path] ) ? $state->nodeOf( $path ) : 0;
-                // a page the state does not hold (a group page or container a console step made): by its remote id
-                return $node ?: $engine->nodeByRemotePath( $path );
-            },
+            'page' => function ( $path ) use ( $engine ) { return $engine->pageNode( $path ); },
             'page_id' => function ( $id ) use ( $engine ) { return $engine->nodeByPageId( $id ); },
             'asset' => function ( $path ) use ( $state ) {
                 $asset = $state->asset( $path );
