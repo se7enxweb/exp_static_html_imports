@@ -109,10 +109,43 @@ class expStaticImportTypeDocHtml extends expStaticImportHtmlType
 
     public function parse( $source, $path )
     {
+        $html = (string)@file_get_contents( rtrim( $source, '/' ) . '/' . $path );
+        // the export's error pages ("404 Not Found") are no pages
+        foreach ( $this->rules->getList( 'NotFoundTitlePatterns' ) as $pattern )
+            if ( preg_match( '/<title>([^<]*)<\/title>/i', $html, $t ) && @preg_match( $pattern, trim( $t[1] ) ) )
+                return null;
+        // its redirect stubs ("Page has moved", a meta refresh) become a redirect to the page they point to
+        if ( preg_match( '/<meta[^>]+http-equiv=["\']?refresh["\']?[^>]+content=["\']?\d+;\s*url=([^"\'>]+)/i', $html, $r ) )
+        {
+            $target = expStaticImportDom::resolve( $path, $r[1] );
+            return array( 'path' => $path, 'title' => '', 'body_html' => '', 'original_html' => '', 'meta' => array(),
+                          'hidden' => false, 'aliases' => array(), 'redirect_to' => $target !== null ? $target : '' );
+        }
         $page = parent::parse( $source, $path );
         if ( $page === null )
             return null;
         $meta = $page['meta'];
+        // the documentation site's own authorship box: "Written by: <name> (14/09/2010 10:22 am)" and
+        // "Last updated by: <name> (28/09/2010 9:12 am)"
+        foreach ( array( 'Written by' => array( 'author', 'created' ), 'Last updated by' => array( 'modifier', 'modified' ) ) as $label => $keys )
+            if ( preg_match( '/<label>' . $label . ':<\/label>\s*(.*?)(?:&nbsp;|\s)*\(([^)]*)\)/su', $html, $w ) )
+            {
+                $name = trim( html_entity_decode( strip_tags( $w[1] ), ENT_QUOTES, 'UTF-8' ) );
+                if ( $name !== '' )
+                    $meta[$keys[0]] = $name;
+                $date = DateTime::createFromFormat( 'd/m/Y g:i a', trim( $w[2] ) ) ?: DateTime::createFromFormat( 'd/m/Y H:i', trim( $w[2] ) );
+                if ( $date )
+                    $meta[$keys[1]] = $date->getTimestamp();
+            }
+        // Confluence: "Created by <a>A</a>, last modified by <a>B</a> on <date>" (or "Created and last modified by")
+        if ( preg_match( '/last modified by\s*(?:<a[^>]*>)?([^<]+?)(?:<\/a>)?\s+on\s+(\w+ \d{1,2},? \d{4})/iu', $html, $c ) )
+        {
+            $meta['modifier'] = trim( html_entity_decode( $c[1], ENT_QUOTES, 'UTF-8' ) );
+            if ( $time = strtotime( $c[2] ) )
+                $meta['modified'] = $time;
+        }
+        if ( preg_match( '/Created by\s*(?:<a[^>]*>)?([^<]+?)(?:<\/a>)?\s*,/iu', $html, $c ) )
+            $meta['author'] = trim( html_entity_decode( $c[1], ENT_QUOTES, 'UTF-8' ) );
         $folder = array_search( $path, $this->folderPages, true );
         if ( $folder !== false )
         {
@@ -238,6 +271,8 @@ class expStaticImportTypeDocHtml extends expStaticImportHtmlType
     {
         $fields = parent::fields( $page );
         $fields['version'] = isset( $page['meta']['version'] ) ? (string)$page['meta']['version'] : '';
+        $fields['modifier'] = isset( $page['meta']['modifier'] ) ? (string)$page['meta']['modifier'] : '';
+        $fields['created'] = isset( $page['meta']['created'] ) ? (string)(int)$page['meta']['created'] : '';
         return $fields;
     }
 }

@@ -246,7 +246,20 @@ class expStaticImportEngine
         {
             $page = $this->type->parse( $this->source, $path );
             if ( $page === null )
+            {
+                // not a page (an error page of the export): one imported by an earlier run is hidden
+                $this->retire( $path, 'not a page' );
                 return;
+            }
+            if ( isset( $page['redirect_to'] ) )
+            {
+                // a redirect stub: its path redirects to the page it points to, nothing is imported for it
+                $this->report['counts']['duplicates']++;
+                $this->retire( $path, 'a redirect' );
+                if ( !$this->options['dry_run'] && $page['redirect_to'] !== '' )
+                    $this->state->setPage( $path, array( 'status' => 'duplicate', 'duplicate_of' => $page['redirect_to'], 'redirected' => false ) );
+                return;
+            }
             $page = $this->type->map( $page );
         }
         catch ( expStaticImportPageException $e )
@@ -260,6 +273,33 @@ class expStaticImportEngine
             return;
         }
         $this->importParsedPage( $page, $user );
+    }
+
+    /**
+     * A path that is no longer a page of its own (an error page, a redirect stub): the node an earlier run made for it
+     * is hidden (moved to the trash with --apply-removals).
+     *
+     * @param string $path
+     * @param string $why
+     */
+    protected function retire( $path, $why )
+    {
+        $entry = $this->state->page( $path );
+        if ( !$entry || empty( $entry['node_id'] ) || ( isset( $entry['status'] ) && $entry['status'] === 'removed' ) )
+            return;
+        $this->report['counts']['removed']++;
+        $this->report['removed'][] = array( 'path' => $path, 'node_id' => (int)$entry['node_id'], 'reason' => $why, 'trashed' => (bool)$this->options['apply_removals'] );
+        if ( $this->options['dry_run'] )
+            return;
+        $node = eZContentObjectTreeNode::fetch( (int)$entry['node_id'] );
+        if ( $node instanceof eZContentObjectTreeNode )
+        {
+            if ( $this->options['apply_removals'] )
+                eZContentObjectTreeNode::removeSubtrees( array( (int)$entry['node_id'] ), true );
+            else if ( !(int)$node->attribute( 'is_hidden' ) )
+                eZContentObjectTreeNode::hideSubTree( $node );
+        }
+        $this->state->setPage( $path, array( 'status' => 'removed', 'node_id' => 0, 'object_id' => 0, 'reason' => $why ) );
     }
 
     /**
