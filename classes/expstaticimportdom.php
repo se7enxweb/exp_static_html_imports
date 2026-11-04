@@ -181,7 +181,14 @@ class expStaticImportDom
      */
     public static function decodeDoubleEncoded( $html )
     {
-        return preg_replace( '/&amp;(#(?:\d{1,7}|x[0-9a-fA-F]{1,6});)/', '&$1', (string)$html );
+        return preg_replace_callback( '/&amp;#(\d{1,7}|x[0-9a-fA-F]{1,6});/', function ( $m ) {
+            $n = $m[1][0] === 'x' ? hexdec( substr( $m[1], 1 ) ) : (int)$m[1];
+            // 128 - 159 are Windows-1252's characters as the old site wrote them ("&#133;" is its ellipsis), no
+            // control characters: their Unicode reference
+            if ( $n >= 128 && $n <= 159 && function_exists( 'mb_convert_encoding' ) && ( $c = mb_convert_encoding( chr( $n ), 'UTF-8', 'Windows-1252' ) ) !== '' && $c !== '?' )
+                return '&#' . mb_ord( $c, 'UTF-8' ) . ';';
+            return '&#' . $m[1] . ';';
+        }, (string)$html );
     }
 
     /**

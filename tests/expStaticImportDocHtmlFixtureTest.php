@@ -154,6 +154,10 @@ class expStaticImportDocHtmlFixtureTest extends \PHPUnit\Framework\TestCase
         $this->assertStringNotContainsString( 'comment2', $first['original_html'] );
         // a pasted text's style spans go from the text (the XML would show them), the original keeps them
         $this->assertSame( '<p class="p1">Top.</p>', $first['body_html'] );
+        // a code block keeps only its text (a link in it would show as markup), and Windows-1252's "&#133;" is the ellipsis
+        $this->assertStringContainsString( '<pre class="p1">php console assetic:dump --env</pre>', $fourth['body_html'] );
+        $this->assertStringContainsString( 'Alone &#8230;', $fourth['body_html'] );
+        $this->assertStringContainsString( 'href="http://asseticdump/"', $fourth['original_html'] );
         $this->assertStringContainsString( '<span class="s1">Top.</span>', $first['original_html'] );
         $this->assertStringContainsString( 'a list item of the text', $second['original_html'] );
         $this->assertStringNotContainsString( 'Deepest', $second['original_html'] );
