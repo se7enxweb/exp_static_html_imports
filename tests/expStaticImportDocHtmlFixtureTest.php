@@ -116,6 +116,20 @@ class expStaticImportDocHtmlFixtureTest extends \PHPUnit\Framework\TestCase
         $this->assertStringNotContainsString( 'Why?', $page['body_html'] );
     }
 
+    public function testCommentNamesSubjectsAndTextsAreDecodedTheOriginalIsNot()
+    {
+        $page = $this->type->parse( $this->source, 'Manual/1.0/Chapter/Page.html' );
+        $reply = $page['children'][0]['children'][0];
+        // the source encoded these characters twice ("Kara&amp;#347;"): as written they are the characters
+        $this->assertSame( "Piotrek Kara\u{015B}", $reply['meta']['author'] );
+        $this->assertSame( "Piotrek Kara\u{015B}", $reply['bylines']['written']['name'] );
+        $this->assertSame( "Re: Question \u{201C}why\u{201D}", $reply['title'] );
+        $this->assertSame( '<p>Because &#322;.</p>', $reply['body_html'] );
+        $this->assertStringContainsString( 'Kara&amp;#347;', $reply['original_html'] );
+        $this->assertSame( 'a &amp;nbsp; b &#322;', expStaticImportDom::decodeDoubleEncoded( 'a &amp;nbsp; b &amp;#322;' ) );
+        $this->assertSame( "Kara\u{015B}", expStaticImportDom::decodeText( 'Kara&#347;' ) );
+    }
+
     public function testRedirectStubsAndErrorPages()
     {
         $stub = $this->type->parse( $this->source, 'moved.html' );

@@ -111,8 +111,15 @@ von Confluence) lesen die Kommentare der Leser; jeder wird eine Seite der Klasse
 Antwort unter dem Kommentar, auf den sie antwortet, mit Autor (als Mitwirkender und wie geschrieben), Datum, ID, der ID
 des beantworteten Kommentars, Adresse und eigenem Markup. `ClassChange=replace` (der Standard) verbirgt ein Objekt,
 dessen Klasse die Regeln geändert haben, und legt ein neues an. `CommentMarkers[]` nennen den Text, an dem eine Seite
-mit Kommentaren erkennbar ist, für `relink --comments`. `./console exp:static-import:comments --type=<label>` prüft
-jeden Kommentar der Quelle gegen das gespeicherte Objekt.
+mit Kommentaren erkennbar ist, für `relink --comments`, das jeden Kommentar einer solchen Seite neu schreibt. Namen,
+Betreffs und Texte werden gelesen, wie sie geschrieben wurden: Zeichenreferenzen, die eine Quelle doppelt kodiert
+hat (`Kara&amp;#347;`), werden zu ihren Zeichen; das Original-Markup bleibt, wie es ist.
+
+`./console exp:static-import:comments --type=<label>` prüft auf Datenverlust: je Seite die Zahl der Quelle gegen die
+gespeicherte, und je Kommentar Klasse, Ort (unter seiner Seite oder dem beantworteten Kommentar), Original-Markup
+(sha1), Text, Betreff, Autor (Relation und Name), Datum, ID und die ID des beantworteten Kommentars. Mit
+`--trash-replaced` kommen die durch einen Klassenwechsel ersetzten Objekte in den Papierkorb, auf einer Seite ohne
+Fehlendes, und jedes nur, wenn sein ganzer Teilbaum aus ersetzten Objekten besteht.
 
 ## Git-Autoren
 
@@ -150,7 +157,10 @@ Keine zwei Seiten gleichen Namens unter einer Elternseite: `SiblingNames=unique`
 `SiblingNameSuffix` (Standard `({n})`, ein Zähler ab 2; er kann `{page_id}` und die Werte von `RouteMeta[]` nutzen und
 bekommt zusätzlich den Zähler, wenn auch er vergeben ist), `refuse` überspringt die Seite (fehlgeschlagen, „muss
 geprüft werden"), `warn` meldet sie nur, `off` schaltet die Prüfung aus. Jede Umbenennung steht in den Warnungen des
-Berichts und wird als `renamed` gezählt.
+Berichts und wird als `renamed` gezählt. `SiblingNameKeepsTitle[]` nennt die Klassen, deren Titel Inhalt ist, wie
+er geschrieben wurde (der Betreff eines Kommentars): Bei ihnen kommt der Zusatz nur in den Namen des Objekts, das
+Titelattribut behält den Titel, und der Kernel macht die Adresse eindeutig. Ein durch einen Klassenwechsel ersetztes
+Objekt (Remote-ID `<id>-was-<Klasse>`) belegt keinen Namen mehr.
 
 ## Konsolenschritte neben einem Lauf
 
@@ -163,4 +173,4 @@ kommt in einen Status-Patch in `state-patches/` des Arbeitsordners, den dieser L
 | `exp:static-import:relink --type=<label> [--comments]` | Seiten, deren statische Links sich jetzt auflösen lassen, oder jede Seite mit Kommentaren, erneut importiert |
 | `exp:static-import:hide-non-pages --type=<label>` | verbirgt importierte Seiten, die heute keine Seiten sind (Fehlerseiten, Binärdateien, Ansichten, Kopien, ausgeschlossene) |
 | `exp:static-import:bylines --type=<label> [--fill [--replace-roles]]` | die Prüfung der Autorenzeilen auf Datenverlust, und das Auffüllen |
-| `exp:static-import:comments --type=<label>` | die Prüfung der Kommentare auf Datenverlust |
+| `exp:static-import:comments --type=<label> [--trash-replaced]` | die Prüfung der Kommentare auf Datenverlust, und das Entfernen der von ihnen ersetzten Objekte |

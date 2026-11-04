@@ -158,6 +158,33 @@ class expStaticImportDom
     }
 
     /**
+     * A name or a title as written: character references left in the text after parsing (a source that encoded them
+     * twice, "Kara&amp;#347;", gives "Kara&#347;" as text) become their characters.
+     *
+     * @param string $text
+     * @return string
+     */
+    public static function decodeText( $text )
+    {
+        $text = (string)$text;
+        if ( strpos( $text, '&' ) === false )
+            return $text;
+        return trim( preg_replace( '/\s+/u', ' ', str_replace( "\xc2\xa0", ' ', html_entity_decode( $text, ENT_QUOTES | ENT_HTML5, 'UTF-8' ) ) ) );
+    }
+
+    /**
+     * Markup with its twice-encoded numeric character references ("&amp;#347;", which shows as "&#347;") made the
+     * reference they were meant to be. Named references stay: a text about markup may show "&amp;nbsp;" on purpose.
+     *
+     * @param string $html
+     * @return string
+     */
+    public static function decodeDoubleEncoded( $html )
+    {
+        return preg_replace( '/&amp;(#(?:\d{1,7}|x[0-9a-fA-F]{1,6});)/', '&$1', (string)$html );
+    }
+
+    /**
      * Resolves a link of a page to a path relative to the source root.
      *
      * @param string $fromPath the page's own path (e.g. Exponential/Technical-manual/3-5.html)

@@ -654,6 +654,11 @@ class expStaticImportEngine
         $out = array( 'pages' => 0, 'rewritten' => 0, 'links' => 0, 'unresolved' => 0, 'targets' => array(), 'flagged' => 0, 'failed' => 0, 'patch' => '' );
         $patch = array();
         $n = 0;
+        // the pages a page carries (its comments, "<page>#comment<id>"), by page, read once
+        $carried = array();
+        foreach ( array_keys( $this->state->data['pages'] ) as $childPath )
+            if ( ( $hash = strpos( (string)$childPath, '#' ) ) !== false )
+                $carried[substr( (string)$childPath, 0, $hash )][] = (string)$childPath;
         foreach ( array_keys( $this->state->data['pages'] ) as $path )
         {
             $path = (string)$path;
@@ -700,6 +705,11 @@ class expStaticImportEngine
             $failed = $this->report['counts']['failed'];
             $flagged = $this->report['counts']['flagged'];
             $this->state->setPage( $path, array( 'source_hash' => '' ) );
+            // with $markers its comments are written again too, even where their source did not change (a fix of how
+            // they are written, such as a subject kept as written, reaches them)
+            if ( $markers && isset( $carried[$path] ) )
+                foreach ( $carried[$path] as $childPath )
+                    $this->state->setPage( $childPath, array( 'source_hash' => '' ) );
             $this->importPage( $path, $user );
             $after = $this->state->page( $path );
             $out['links'] += $this->report['counts']['links'] - $links;
@@ -728,12 +738,18 @@ class expStaticImportEngine
     /**
      * The no-data-loss audit of the comments (exp:static-import:comments): for every imported page, each comment of
      * its source (the pages a type builds below a page, with their replies) must be an object of its class, below its
-     * page or the comment it answers, with the same original markup (sha1), its author and its date. Read-only.
+     * page or the comment it answers, with the same original markup (sha1), the same text, its subject as written, its
+     * author (relation and name as written), its date, its own id and the id of the comment it answers. Read-only,
+     * unless $trashReplaced: then, on a page that misses nothing, the objects its comments replaced (a class change,
+     * remote id "<remote id>-was-<class>") go to the trash, each only when its whole subtree is replaced objects.
      *
      * @param array $patterns shell patterns of the source paths (empty: all)
-     * @return array( 'pages' => pages with comments, 'comments' => n, 'stored' => n, 'missing' => n, 'by_page' => ... )
+     * @param bool $trashReplaced
+     * @return array( 'pages' => pages with comments, 'comments' => n, 'stored' => n, 'missing' => n, 'replaced_left' =>
+     *                replaced objects still there, 'trashed' => n, 'by_page' => what each page misses, 'counts' => per
+     *                page array( source, stored ) )
      */
-    public function commentsAudit( array $patterns = array() )
+    public function commentsAudit( array $patterns = array(), $trashReplaced = false )
     {
         $this->options['pull'] = false;
         $this->source = $this->prepareSource();
@@ -742,7 +758,10 @@ class expStaticImportEngine
         if ( method_exists( $this->type, 'setKnownPaths' ) )
             $this->type->setKnownPaths( $paths );
         $map = $this->rules->getHash( 'AttributeMap' );
-        $out = array( 'pages' => 0, 'comments' => 0, 'stored' => 0, 'missing' => 0, 'by_page' => array() );
+        $db = eZDB::instance();
+        $out = array( 'pages' => 0, 'comments' => 0, 'stored' => 0, 'missing' => 0, 'replaced_left' => 0, 'trashed' => 0, 'by_page' => array(), 'counts' => array() );
+        // text without markup, references and whitespace: what a reader reads, however the XML wrote it
+        $plain = function ( $html ) { return preg_replace( '/\s+/u', '', html_entity_decode( strip_tags( str_replace( '<', ' <', (string)$html ) ), ENT_QUOTES | ENT_HTML5, 'UTF-8' ) ); };
         $n = 0;
         foreach ( $this->state->data['pages'] as $path => $entry )
         {
@@ -767,25 +786,32 @@ class expStaticImportEngine
             $out['pages']++;
             $object = eZContentObject::fetch( (int)$entry['object_id'] );
             $missing = array();
-            $walk = function ( array $comments, $parentNode ) use ( &$walk, &$missing, &$out, $map )
+            $replaced = array();
+            $count = array( 'source' => 0, 'stored' => 0 );
+            $walk = function ( array $comments, $parentNode ) use ( &$walk, &$missing, &$out, &$replaced, &$count, $map, $db, $plain )
             {
                 foreach ( $comments as $comment )
                 {
                     $comment = $this->type->map( $comment );
                     $out['comments']++;
-                    $stored = eZContentObject::fetchByRemoteID( self::remoteID( $this->label, $comment['path'] ) );
+                    $count['source']++;
+                    $remoteID = self::remoteID( $this->label, $comment['path'] );
+                    foreach ( $db->arrayQuery( "SELECT id FROM ezcontentobject WHERE status = 1 AND remote_id LIKE '" . $db->escapeString( $remoteID ) . "-was-%'" ) as $row )
+                        $replaced[] = (int)$row['id'];
+                    $stored = eZContentObject::fetchByRemoteID( $remoteID );
                     $id = isset( $comment['meta']['comment_id'] ) ? $comment['meta']['comment_id'] : $comment['path'];
-                    if ( !$stored instanceof eZContentObject )
+                    if ( !$stored instanceof eZContentObject || (int)$stored->attribute( 'status' ) !== eZContentObject::STATUS_PUBLISHED )
                     {
                         $missing[] = "comment $id: not imported";
                         $walk( isset( $comment['children'] ) ? (array)$comment['children'] : array(), 0 );
                         continue;
                     }
                     $out['stored']++;
+                    $count['stored']++;
                     $node = $stored->attribute( 'main_node' );
                     if ( (string)$stored->attribute( 'class_identifier' ) !== (string)$comment['class'] )
                         $missing[] = "comment $id: class " . $stored->attribute( 'class_identifier' ) . ", not " . $comment['class'];
-                    if ( $parentNode && ( !$node || (int)$node->attribute( 'parent_node_id' ) !== (int)$parentNode ) )
+                    if ( !$parentNode || !$node || (int)$node->attribute( 'parent_node_id' ) !== (int)$parentNode )
                         $missing[] = "comment $id: not below the page or the comment it answers";
                     $dataMap = $stored->dataMap();
                     foreach ( $map as $key => $field )
@@ -794,26 +820,56 @@ class expStaticImportEngine
                         if ( ( $mapClass !== '*' && $mapClass !== $comment['class'] ) || !isset( $dataMap[$identifier] ) )
                             continue;
                         $attribute = $dataMap[$identifier];
-                        if ( $field === 'original_html' && sha1( trim( (string)$attribute->attribute( 'data_text' ) ) ) !== sha1( trim( (string)$comment['original_html'] ) ) )
+                        $text = (string)$attribute->attribute( 'data_text' );
+                        if ( $field === 'original_html' && sha1( trim( $text ) ) !== sha1( trim( (string)$comment['original_html'] ) ) )
                             $missing[] = "comment $id: the original text differs";
-                        if ( $field === 'body' && trim( strip_tags( (string)$comment['body_html'] ) ) !== '' && trim( strip_tags( (string)$attribute->attribute( 'data_text' ) ) ) === '' )
+                        if ( $field === 'body' && $plain( $comment['body_html'] ) !== '' && $plain( $text ) === '' )
                             $missing[] = "comment $id: no text";
-                        if ( $field === 'author_name' && !empty( $comment['meta']['author'] ) && trim( (string)$attribute->attribute( 'data_text' ) ) === '' )
-                            $missing[] = "comment $id: no author name";
+                        else if ( $field === 'body' && sha1( $plain( $comment['body_html'] ) ) !== sha1( $plain( $text ) ) )
+                            $missing[] = "comment $id: the text differs";
+                        if ( $field === 'title' && trim( $text ) !== trim( (string)$comment['title'] ) )
+                            $missing[] = "comment $id: the subject differs";
+                        if ( $field === 'author_name' && (string)( isset( $comment['meta']['author'] ) ? $comment['meta']['author'] : '' ) !== trim( $text ) )
+                            $missing[] = "comment $id: " . ( trim( $text ) === '' ? 'no author name' : 'the author name differs' );
                         if ( $field === 'written_by' && !empty( $comment['meta']['author'] ) && !(int)$attribute->attribute( 'data_int' ) )
                             $missing[] = "comment $id: no author";
                         if ( ( $field === 'written_at' || $field === 'modified' ) && !empty( $comment['meta']['modified'] ) && (int)$attribute->attribute( 'data_int' ) !== (int)$comment['meta']['modified'] )
-                            $missing[] = "comment $id: the date differs";
-                        if ( $field === 'parent_comment_id' && (string)$attribute->attribute( 'data_text' ) !== (string)$comment['meta']['parent_comment_id'] )
+                            $missing[] = "comment $id: " . ( (int)$attribute->attribute( 'data_int' ) ? 'the date differs' : 'no date' );
+                        if ( $field === 'comment_id' && trim( $text ) !== (string)$comment['meta']['comment_id'] )
+                            $missing[] = "comment $id: the comment id differs";
+                        if ( $field === 'parent_comment_id' && $text !== (string)$comment['meta']['parent_comment_id'] )
                             $missing[] = "comment $id: the parent comment id differs";
                     }
                     $walk( isset( $comment['children'] ) ? (array)$comment['children'] : array(), $node ? (int)$node->attribute( 'node_id' ) : 0 );
                 }
             };
             $walk( (array)$page['children'], $object ? (int)$object->attribute( 'main_node_id' ) : 0 );
-            $out['missing'] += count( array_unique( $missing ) );
+            $missing = array_values( array_unique( $missing ) );
+            if ( $count['source'] !== $count['stored'] )
+                $missing[] = "the source has {$count['source']} comments, {$count['stored']} are stored";
+            $out['missing'] += count( $missing );
+            $out['counts'][$path] = $count;
             if ( $missing )
-                $out['by_page'][$path] = array_values( array_unique( $missing ) );
+                $out['by_page'][$path] = $missing;
+            foreach ( array_unique( $replaced ) as $oldID )
+            {
+                $old = eZContentObject::fetch( $oldID );
+                if ( !$old instanceof eZContentObject || (int)$old->attribute( 'status' ) !== eZContentObject::STATUS_PUBLISHED )
+                    continue;
+                $node = $old->attribute( 'main_node' );
+                // only a page that misses nothing gives up its replaced objects, and only a subtree of replaced objects
+                $live = $node instanceof eZContentObjectTreeNode ? (int)$db->arrayQuery( "SELECT COUNT(*) AS n FROM ezcontentobject_tree t JOIN ezcontentobject o ON o.id = t.contentobject_id
+                                                                                          WHERE t.path_string LIKE '" . $db->escapeString( $node->attribute( 'path_string' ) ) . "%'
+                                                                                          AND o.remote_id NOT LIKE '%-was-%'" )[0]['n'] : 1;
+                if ( $trashReplaced && !$missing && !$live )
+                {
+                    eZContentObjectTreeNode::removeSubtrees( array( (int)$node->attribute( 'node_id' ) ), true );
+                    $out['trashed']++;
+                    $this->audit( 'system.staticimport_page.trash_replaced', array( 'path' => $path, 'object' => $oldID ) );
+                }
+                else
+                    $out['replaced_left']++;
+            }
         }
         return $out;
     }
@@ -893,7 +949,8 @@ class expStaticImportEngine
         {
             $this->siblingNames[$parentNode] = array();
             foreach ( (array)eZDB::instance()->arrayQuery( "SELECT o.id, o.name FROM ezcontentobject_tree t JOIN ezcontentobject o ON o.id = t.contentobject_id
-                                                            WHERE t.parent_node_id = $parentNode AND t.node_id <> t.parent_node_id" ) as $row )
+                                                            WHERE t.parent_node_id = $parentNode AND t.node_id <> t.parent_node_id
+                                                            AND o.remote_id NOT LIKE '%-was-%'" ) as $row )
             {
                 $key = mb_strtolower( trim( (string)$row['name'] ), 'UTF-8' );
                 if ( !isset( $this->siblingNames[$parentNode][$key] ) )
@@ -1344,6 +1401,8 @@ class expStaticImportEngine
     protected function contributor( $name, eZUser $user )
     {
         $class = (string)$this->rules->get( 'ContributorClass', '' );
+        // a name as written, never with the character references of a twice-encoded source (Kara&#347;)
+        $name = expStaticImportDom::decodeText( $name );
         $key = expStaticImportByline::normalizeName( $name );
         if ( $class === '' || $key === '' )
             return 0;
@@ -1520,6 +1579,11 @@ class expStaticImportEngine
                 eZContentObjectTreeNode::hideSubTree( $node );
             $object->setAttribute( 'remote_id', $remoteID . '-was-' . $object->attribute( 'class_identifier' ) );
             $object->store();
+            // the replaced object is going: its name is no longer taken below its parent (uniqueSiblingName())
+            if ( $node instanceof eZContentObjectTreeNode && isset( $this->siblingNames[(int)$node->attribute( 'parent_node_id' )] ) )
+                foreach ( $this->siblingNames[(int)$node->attribute( 'parent_node_id' )] as $key => $id )
+                    if ( $id === (int)$object->attribute( 'id' ) )
+                        unset( $this->siblingNames[(int)$node->attribute( 'parent_node_id' )][$key] );
             $this->report['counts']['replaced'] = ( isset( $this->report['counts']['replaced'] ) ? $this->report['counts']['replaced'] : 0 ) + 1;
             $previous = null;
             $object = null;
@@ -1532,7 +1596,10 @@ class expStaticImportEngine
             $this->fail( $path, "a page named '{$page['title']}' is below node $parentNode already (SiblingNames=refuse)", $page );
             return;
         }
-        if ( $unique !== $page['title'] )
+        // SiblingNameKeepsTitle[]: classes whose title is content as written (a comment's subject): the unique name is
+        // only the object's name (and so its node name), the title attribute keeps the title
+        $keepsTitle = in_array( (string)$page['class'], $this->rules->getList( 'SiblingNameKeepsTitle' ), true );
+        if ( $unique !== $page['title'] && !$keepsTitle )
             foreach ( $this->rules->getHash( 'AttributeMap' ) as $key => $field )
             {
                 list( $mapClass, $identifier ) = array_pad( explode( '/', (string)$key, 2 ), 2, '' );
@@ -1613,6 +1680,13 @@ class expStaticImportEngine
         // the next run will find
         eZContentObject::clearCache( array( (int)$object->attribute( 'id' ) ) );
         $object = eZContentObject::fetch( (int)$object->attribute( 'id' ) );
+        // a title kept as written (SiblingNameKeepsTitle[]) with a name taken below the parent: the object's name
+        // carries the suffix (the publish named it after the title); the node's address is made unique by the kernel
+        if ( $keepsTitle && !$isRoot && $unique !== null && (string)$object->attribute( 'name' ) !== (string)$unique )
+        {
+            $object->setName( $unique, (int)$object->attribute( 'current_version' ), $this->language() );
+            $object->store();
+        }
         $node = $object->attribute( 'main_node' );
         if ( $node instanceof eZContentObjectTreeNode )
         {

@@ -121,7 +121,7 @@ class expStaticImportByline
                     $values = array();
                     foreach ( array( 'written', 'updated' ) as $field )
                     {
-                        $name = isset( $m[$field] ) ? trim( $m[$field] ) : '';
+                        $name = isset( $m[$field] ) ? expStaticImportDom::decodeText( trim( $m[$field] ) ) : '';
                         $time = isset( $m[$field . '_at'] ) && trim( $m[$field . '_at'] ) !== '' ? $this->parseDate( $m[$field . '_at'] ) : null;
                         if ( $name !== '' || $time !== null )
                             $values[$field] = array( 'name' => $name, 'time' => $time );
@@ -162,7 +162,8 @@ class expStaticImportByline
         foreach ( $this->rules->getList( 'BylineCommentAuthorSelectors' ) as $selector )
             foreach ( expStaticImportDom::query( $doc, $selector ) as $element )
             {
-                $name = trim( preg_replace( '/\s+/u', ' ', str_replace( "\xc2\xa0", ' ', $element->textContent ) ) );
+                // a name as written, never with the character references of a twice-encoded source (Kara&#347;)
+                $name = expStaticImportDom::decodeText( trim( preg_replace( '/\s+/u', ' ', str_replace( "\xc2\xa0", ' ', $element->textContent ) ) ) );
                 if ( $name !== '' && !isset( $names[self::normalizeName( $name )] ) )
                     $names[self::normalizeName( $name )] = $name;
             }

@@ -101,6 +101,9 @@ No two pages of one name below one parent: `SiblingNames=unique` (the default) g
 `SiblingNameSuffix` (default `({n})`, a counter from 2; it may use `{page_id}` and the `RouteMeta[]` values, and gets
 the counter as well when it is taken too), `refuse` skips the page (failed, "needs review"), `warn` only reports it,
 `off` turns the check off. Each renaming is listed in the report's warnings, and counted as `renamed`.
+`SiblingNameKeepsTitle[]` names the classes whose title is content as written (a comment's subject): for them the
+suffix goes only into the object's name, the title attribute keeps the title, and the kernel makes the address
+unique. An object a class change replaced (remote id `<id>-was-<class>`) takes no name any more.
 
 ## The top of the tree, products and fixed parents
 
@@ -129,7 +132,14 @@ the counter as well when it is taken too), `refuse` skips the page (failed, "nee
 comment it answers, with its author (a contributor, and as written), its date, its id, the id of the comment it
 answers, its address and its own markup. `ClassChange=replace` (the default) hides an object whose class the rules
 changed and makes a new one. `CommentMarkers[]` name the text that marks a page with comments, for
-`relink --comments`.
+`relink --comments`, which writes every comment of such a page again. Names, subjects and texts are read as written: character
+references a source encoded twice (`Kara&amp;#347;`) become their characters; the original markup stays as it is.
+
+`exp:static-import:comments` is the no-data-loss audit: per page the source's count against the stored one, and
+for each comment its class, its place (below its page or the comment it answers), its original markup (sha1), its
+text, its subject, its author (relation and name), its date, its id and the id of the comment it answers. With
+`--trash-replaced` the objects a class change replaced go to the trash, on a page that misses nothing, and each
+only when its whole subtree is replaced objects.
 
 ## Git authors
 
@@ -149,4 +159,4 @@ patch in `state-patches/` of the work folder, which that run merges first.
 | `exp:static-import:relink --type=<label> [--comments]` | pages whose static links can be resolved now, or every page with comments, imported again |
 | `exp:static-import:hide-non-pages --type=<label>` | hides imported pages that are no pages today (error pages, binary files, viewers, copies, excluded) |
 | `exp:static-import:bylines --type=<label> [--fill [--replace-roles]]` | the no-data-loss audit of the bylines, and the fill |
-| `exp:static-import:comments --type=<label>` | the no-data-loss audit of the comments |
+| `exp:static-import:comments --type=<label> [--trash-replaced]` | the no-data-loss audit of the comments, and the removal of the objects they replaced |

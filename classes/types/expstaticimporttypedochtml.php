@@ -216,6 +216,11 @@ class expStaticImportTypeDocHtml extends expStaticImportHtmlType
     {
         $commentPath = $pagePath . '#comment' . $id;
         $parentID = $parentPath !== $pagePath && preg_match( '/#comment(\w+)$/', $parentPath, $p ) ? $p[1] : '';
+        // the subject, the author and the text as written: the old site encoded some characters twice ("Kara&amp;#347;"),
+        // so their references are decoded (the original markup stays as the source has it)
+        $title = expStaticImportDom::decodeText( $title );
+        $author = expStaticImportDom::decodeText( $author );
+        $text = expStaticImportDom::decodeDoubleEncoded( $text );
         return array(
             'path' => $commentPath,
             'title' => $title,
