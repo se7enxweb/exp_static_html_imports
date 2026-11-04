@@ -53,3 +53,20 @@ breadcrumb says where a page belongs.
   the viewer's path redirects to it. `AssetPagePaths[]` names pages that are always such viewers.
 - A page that an earlier run imported and that is no page by these rules is hidden on the next run (trashed with
   `--apply-removals`). `./console exp:static-import:hide-non-pages --type=<label>` hides them at once, without a run.
+
+## Bylines: who wrote a page, and every person it names
+
+- Labelled lines (`BylineSelectors[]`, `BylineFields[<field>]=<label>`, `BylineListFields[]`): "Written by: A
+  (14/09/2010 10:14 am)", "Last updated by: B (...)", "Maintainers: C, D".
+- Sentences (`BylineSentenceSelectors[]`, anywhere in the page, and `BylineSentences[]`): regular expressions with the
+  named groups `written`, `written_at`, `updated` and `updated_at`, tried in order, such as Confluence's "Created by A,
+  last modified by B on Oct 28, 2016". A sentence with the date of the last change and no name of its own credits the
+  change to the writer. A date link whose `title` is a fuller date counts with that one.
+- Comment authors (`BylineCommentAuthorSelectors[]`): the list field `commenters`.
+- The field `contributors` holds every person of every byline field, each once (names compared without case and extra
+  spaces): map it to an object relation list, e.g. `AttributeMap[*/contributors]=contributors`.
+- Byline text that no rule reads is reported per page (`byline_failures`), never dropped.
+- `./console exp:static-import:bylines --type=<label>` is the no-data-loss audit: every person and date of the source's
+  bylines is looked for in the stored attributes, per page and in total, with the unknown byline texts. `--fill` writes
+  what is missing into the published versions (a role attribute only when it is empty, the contributors list to the
+  full set) with their object relations, without a run and without touching the state file.

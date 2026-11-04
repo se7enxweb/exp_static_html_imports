@@ -309,6 +309,247 @@ class expStaticImportEngine
         return $out;
     }
 
+    /** the byline fields AttributeMap[] may give an attribute, and what each holds */
+    const BYLINE_FIELDS = array( 'written_by' => 'person', 'last_updated_by' => 'person', 'maintainers' => 'people', 'contributors' => 'people',
+                                 'written_at' => 'time', 'last_updated_at' => 'time' );
+
+    /**
+     * The no-data-loss audit of the bylines (exp:static-import:bylines): for every imported page, each person and
+     * date the source's byline areas name (written, updated, maintainers, comment authors) is looked for in the
+     * attributes the import stores them in (AttributeMap[] of the fields written_by, written_at, last_updated_by,
+     * last_updated_at, maintainers, contributors). With $fill, what is missing is written into the published version
+     * (a role attribute only when it is empty, the contributors list always to the full set), with the object
+     * relations, and checked again. It reads the source as it is and never writes the state file, so it is safe while
+     * a run of the type is going on. Byline text no rule could read is listed as unknown, never dropped.
+     *
+     * @param array $patterns shell patterns of the source paths (empty: all)
+     * @param bool $fill write what is missing
+     * @return array( 'pages' => n, 'people' => n, 'dates' => n, 'missing' => n, 'filled' => n, 'unknown' => n,
+     *                'by_page' => array( path => array( 'missing' => list, 'unknown' => list ) ) )
+     */
+    public function bylines( array $patterns = array(), $fill = false )
+    {
+        $this->options['pull'] = false;
+        $this->source = $this->prepareSource();
+        $paths = $this->type->discover( $this->source );
+        if ( method_exists( $this->type, 'setKnownPaths' ) )
+            $this->type->setKnownPaths( $paths );
+        $user = $fill ? $this->actAs() : null;
+        $map = $this->rules->getHash( 'AttributeMap' );
+        $out = array( 'pages' => 0, 'people' => 0, 'dates' => 0, 'missing' => 0, 'filled' => 0, 'unknown' => 0, 'by_page' => array() );
+        $n = 0;
+        foreach ( $this->state->data['pages'] as $path => $entry )
+        {
+            $path = (string)$path;
+            if ( empty( $entry['object_id'] ) || strpos( $path, '#' ) !== false || ( isset( $entry['status'] ) && in_array( $entry['status'], array( 'removed', 'duplicate', 'failed' ), true ) ) )
+                continue;
+            if ( $patterns && !expStaticImportHtmlType::matchesAny( $path, $patterns ) )
+                continue;
+            if ( ++$n % 50 === 0 )
+                eZContentObject::clearCache();
+            try
+            {
+                $page = $this->type->parse( $this->source, $path );
+                if ( $page === null || isset( $page['asset_of'] ) || isset( $page['redirect_to'] ) )
+                    continue;
+                $page = $this->type->map( $page );
+            }
+            catch ( Throwable $e )
+            {
+                continue;
+            }
+            $object = eZContentObject::fetch( (int)$entry['object_id'] );
+            if ( !$object instanceof eZContentObject )
+                continue;
+            $out['pages']++;
+            $bylines = isset( $page['bylines'] ) ? (array)$page['bylines'] : array();
+            $unknown = isset( $page['byline_failures'] ) ? array_values( (array)$page['byline_failures'] ) : array();
+            // the attribute of each byline field in this page's class
+            $attributes = array();
+            foreach ( $map as $key => $field )
+            {
+                list( $mapClass, $identifier ) = array_pad( explode( '/', (string)$key, 2 ), 2, '' );
+                if ( isset( self::BYLINE_FIELDS[$field] ) && ( $mapClass === '*' || $mapClass === $page['class'] ) && !isset( $attributes[$field] ) )
+                    $attributes[$field] = $identifier;
+            }
+            $expected = $this->expectedBylines( $bylines );
+            $out['people'] += count( $expected['contributors'] );
+            $out['dates'] += count( array_filter( array( $expected['written_at'], $expected['last_updated_at'] ) ) );
+            $missing = $this->missingBylines( $object, $attributes, $expected );
+            if ( $missing && $fill )
+            {
+                if ( $this->fillBylines( $object, $attributes, $expected, $missing, $page, $user ) )
+                    $out['filled']++;
+                eZContentObject::clearCache( array( (int)$object->attribute( 'id' ) ) );
+                $missing = $this->missingBylines( eZContentObject::fetch( (int)$object->attribute( 'id' ) ), $attributes, $expected );
+            }
+            $out['missing'] += count( $missing );
+            $out['unknown'] += count( $unknown );
+            if ( $missing || $unknown )
+                $out['by_page'][$path] = array( 'object_id' => (int)$object->attribute( 'id' ), 'missing' => $missing, 'unknown' => $unknown );
+        }
+        if ( $out['filled'] )
+            eZContentCacheManager::clearAllContentCache( true );
+        return $out;
+    }
+
+    /**
+     * @param array $bylines the byline fields of a page
+     * @return array what the attributes should hold: names (or a list) per person field, a time per date field
+     */
+    protected function expectedBylines( array $bylines )
+    {
+        $name = function ( $field ) use ( $bylines ) { return isset( $bylines[$field]['name'] ) ? trim( (string)$bylines[$field]['name'] ) : ''; };
+        $time = function ( $field ) use ( $bylines ) { return !empty( $bylines[$field]['time'] ) ? (int)$bylines[$field]['time'] : 0; };
+        return array(
+            'written_by' => $name( 'written' ), 'written_at' => $time( 'written' ),
+            'last_updated_by' => $name( 'updated' ), 'last_updated_at' => $time( 'updated' ),
+            'maintainers' => isset( $bylines['maintainers']['names'] ) ? array_values( (array)$bylines['maintainers']['names'] ) : array(),
+            'contributors' => expStaticImportByline::people( $bylines ),
+        );
+    }
+
+    /**
+     * @param eZContentObject $object
+     * @param array $attributes byline field => attribute identifier
+     * @param array $expected
+     * @return array of "<field>: <value>" the stored attributes do not hold
+     */
+    protected function missingBylines( eZContentObject $object, array $attributes, array $expected )
+    {
+        $dataMap = $object->dataMap();
+        $missing = array();
+        foreach ( $expected as $field => $value )
+        {
+            if ( $value === '' || $value === 0 || $value === array() )
+                continue;
+            $attribute = isset( $attributes[$field], $dataMap[$attributes[$field]] ) ? $dataMap[$attributes[$field]] : null;
+            $stored = $attribute ? $this->storedByline( $attribute, self::BYLINE_FIELDS[$field] ) : null;
+            if ( self::BYLINE_FIELDS[$field] === 'time' )
+            {
+                if ( (int)$stored !== (int)$value )
+                    $missing[] = "$field: " . date( 'c', (int)$value );
+                continue;
+            }
+            $have = array_map( array( 'expStaticImportByline', 'normalizeName' ), (array)$stored );
+            foreach ( (array)$value as $person )
+                if ( !in_array( expStaticImportByline::normalizeName( $person ), $have, true ) )
+                    $missing[] = "$field: $person";
+        }
+        return $missing;
+    }
+
+    /**
+     * @param eZContentObjectAttribute $attribute
+     * @param string $kind person, people or time
+     * @return mixed the names of the related objects, or the time
+     */
+    protected function storedByline( eZContentObjectAttribute $attribute, $kind )
+    {
+        if ( $kind === 'time' )
+            return (int)$attribute->attribute( 'data_int' );
+        $ids = array();
+        if ( $attribute->attribute( 'data_type_string' ) === 'ezobjectrelationlist' )
+        {
+            $content = $attribute->content();
+            foreach ( isset( $content['relation_list'] ) ? $content['relation_list'] : array() as $item )
+                $ids[] = (int)$item['contentobject_id'];
+        }
+        else if ( (int)$attribute->attribute( 'data_int' ) )
+            $ids[] = (int)$attribute->attribute( 'data_int' );
+        $names = array();
+        foreach ( $ids as $id )
+            if ( $related = eZContentObject::fetch( $id ) )
+                $names[] = (string)$related->attribute( 'name' );
+        return $names;
+    }
+
+    /**
+     * Writes the missing bylines into the object's published version, with its object relations.
+     *
+     * @return bool whether anything was written
+     */
+    protected function fillBylines( eZContentObject $object, array $attributes, array $expected, array $missing, array $page, eZUser $user )
+    {
+        $fields = array();
+        foreach ( $missing as $line )
+            $fields[substr( $line, 0, strpos( $line, ':' ) )] = true;
+        $version = (int)$object->attribute( 'current_version' );
+        $dataMap = $object->dataMap();
+        $written = false;
+        foreach ( array_keys( $fields ) as $field )
+        {
+            if ( !isset( $attributes[$field] ) )
+                continue;
+            $attribute = isset( $dataMap[$attributes[$field]] ) ? $dataMap[$attributes[$field]] : $this->createAttribute( $object, $attributes[$field] );
+            if ( !$attribute )
+                continue;
+            $kind = self::BYLINE_FIELDS[$field];
+            if ( $kind === 'time' )
+            {
+                // a role's date is filled when empty, never replaced
+                if ( (int)$attribute->attribute( 'data_int' ) )
+                    continue;
+                $attribute->setAttribute( 'data_int', (int)$expected[$field] );
+                $attribute->setAttribute( 'sort_key_int', (int)$expected[$field] );
+                $attribute->store();
+                $written = true;
+                continue;
+            }
+            $ids = array();
+            foreach ( (array)$expected[$field] as $name )
+                if ( $id = $this->contributor( $name, $user ) )
+                    $ids[] = $id;
+            if ( !$ids )
+                continue;
+            if ( $kind === 'person' )
+            {
+                if ( (int)$attribute->attribute( 'data_int' ) )
+                    continue;
+                $attribute->setAttribute( 'data_int', $ids[0] );
+                $attribute->setAttribute( 'sort_key_int', $ids[0] );
+                $attribute->store();
+            }
+            else
+            {
+                // a list keeps what it has and gets the people it lacks
+                $have = array();
+                $content = $attribute->content();
+                foreach ( isset( $content['relation_list'] ) ? $content['relation_list'] : array() as $item )
+                    $have[] = (int)$item['contentobject_id'];
+                $ids = array_values( array_unique( array_merge( $have, $ids ) ) );
+                $attribute->fromString( implode( '-', $ids ) );
+                $attribute->store();
+            }
+            foreach ( $ids as $id )
+                $object->addContentObjectRelation( $id, $version, (int)$attribute->attribute( 'contentclassattribute_id' ) );
+            $written = true;
+        }
+        if ( $written )
+            $this->audit( 'system.staticimport_page.bylines', array( 'path' => $page['path'], 'object' => (int)$object->attribute( 'id' ), 'fields' => array_keys( $fields ) ) );
+        return $written;
+    }
+
+    /**
+     * The attribute row of a class attribute an object was created without (the class got it later, while a process
+     * with the old class definition created the object), in its published version and language.
+     *
+     * @return eZContentObjectAttribute|null
+     */
+    protected function createAttribute( eZContentObject $object, $identifier )
+    {
+        $class = $object->contentClass();
+        $classAttribute = $class ? $class->fetchAttributeByIdentifier( $identifier ) : null;
+        if ( !$classAttribute )
+            return null;
+        $language = $object->attribute( 'initial_language_code' );
+        $attribute = eZContentObjectAttribute::create( (int)$classAttribute->attribute( 'id' ), (int)$object->attribute( 'id' ), (int)$object->attribute( 'current_version' ), $language );
+        $attribute->setAttribute( 'language_id', (int)eZContentLanguage::idByLocale( $language ) | ( (int)$object->attribute( 'language_mask' ) & 1 ) );
+        $attribute->initialize();
+        $attribute->store();
+        return $attribute;
+    }
+
     /**
      * Work a publish does for every object that an import can do once at the end, which keeps a large import fast:
      * - DeferIndexing (default enabled): objects are queued for the search index (site.ini [SearchSettings]
@@ -435,10 +676,16 @@ class expStaticImportEngine
      */
     protected function contributorValue( $value, array $page, eZUser $user )
     {
-        if ( !is_string( $value ) || !preg_match( '/^\{(contributors?):(\w+)\}$/', $value, $m ) )
+        if ( !is_string( $value ) || !preg_match( '/^\{(contributors?):(\w+|\*)\}$/', $value, $m ) )
             return $value;
-        $field = isset( $page['bylines'][$m[2]] ) ? $page['bylines'][$m[2]] : array();
-        $names = isset( $field['names'] ) ? (array)$field['names'] : ( isset( $field['name'] ) ? array( $field['name'] ) : array() );
+        if ( $m[2] === '*' )
+            // {contributors:*}: every person of every byline field
+            $names = expStaticImportByline::people( isset( $page['bylines'] ) ? (array)$page['bylines'] : array() );
+        else
+        {
+            $field = isset( $page['bylines'][$m[2]] ) ? $page['bylines'][$m[2]] : array();
+            $names = isset( $field['names'] ) ? (array)$field['names'] : ( isset( $field['name'] ) ? array( $field['name'] ) : array() );
+        }
         $ids = array();
         foreach ( $names as $name )
             if ( $id = $this->contributor( $name, $user ) )

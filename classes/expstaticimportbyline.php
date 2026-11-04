@@ -47,9 +47,7 @@ class expStaticImportByline
     {
         $result = array( 'fields' => array(), 'failures' => array() );
         $labels = $this->rules->getHash( 'BylineFields' );
-        if ( !$labels )
-            return $result;
-        foreach ( $this->rules->getList( 'BylineSelectors' ) as $selector )
+        foreach ( $labels ? $this->rules->getList( 'BylineSelectors' ) : array() as $selector )
             foreach ( iterator_to_array( expStaticImportDom::query( $doc, $selector, $body ) ) as $container )
             {
                 if ( !$container->parentNode )
@@ -67,7 +65,111 @@ class expStaticImportByline
                 }
                 $container->parentNode->removeChild( $container );
             }
+        $this->sentences( $doc, $result );
+        $this->commenters( $doc, $result );
         return $result;
+    }
+
+    /**
+     * Bylines written as a sentence (Confluence: "Created by A, last modified by B on Oct 28, 2016"), anywhere in the
+     * page: the text of each BylineSentenceSelectors[] element is matched against BylineSentences[], regular
+     * expressions with the named groups written, written_at, updated and updated_at. A sentence with the date of the
+     * last change and no name for it ("Created by A, last modified on <date>", "Created and last modified by A on
+     * <date>") credits the change to the writer. An element whose title attribute is a date (a more precise one, such
+     * as "May 27, 2014 07:44") counts with that date. The fields a labelled line filled are not replaced. A sentence
+     * that no expression reads is a failure, listed, never dropped. The elements leave the page.
+     *
+     * @param DOMDocument $doc
+     * @param array $result
+     */
+    protected function sentences( DOMDocument $doc, array &$result )
+    {
+        $patterns = $this->rules->getList( 'BylineSentences' );
+        foreach ( $this->rules->getList( 'BylineSentenceSelectors' ) as $selector )
+            foreach ( iterator_to_array( expStaticImportDom::query( $doc, $selector ) ) as $element )
+            {
+                if ( !$element instanceof DOMElement || !$element->parentNode )
+                    continue;
+                $xpath = new DOMXPath( $doc );
+                foreach ( iterator_to_array( $xpath->query( './/*[@title]', $element ) ) as $dated )
+                    if ( $this->parseDate( $dated->getAttribute( 'title' ) ) !== null )
+                        $dated->nodeValue = $dated->getAttribute( 'title' );
+                $text = trim( preg_replace( '/\s+/u', ' ', str_replace( "\xc2\xa0", ' ', $element->textContent ) ) );
+                $text = preg_replace( '/\s+,/u', ',', $text );
+                $element->parentNode->removeChild( $element );
+                if ( $text === '' )
+                    continue;
+                $read = false;
+                foreach ( $patterns as $pattern )
+                {
+                    if ( !@preg_match( $pattern, $text, $m ) )
+                        continue;
+                    $values = array();
+                    foreach ( array( 'written', 'updated' ) as $field )
+                    {
+                        $name = isset( $m[$field] ) ? trim( $m[$field] ) : '';
+                        $time = isset( $m[$field . '_at'] ) && trim( $m[$field . '_at'] ) !== '' ? $this->parseDate( $m[$field . '_at'] ) : null;
+                        if ( $name !== '' || $time !== null )
+                            $values[$field] = array( 'name' => $name, 'time' => $time );
+                    }
+                    if ( isset( $values['updated'] ) && $values['updated']['name'] === '' && isset( $values['written'] ) )
+                        $values['updated']['name'] = $values['written']['name'];
+                    $ok = (bool)$values;
+                    foreach ( $values as $value )
+                        if ( $value['name'] === '' )
+                            $ok = false;
+                    // a date group that matched text but no date format is a sentence not read
+                    foreach ( array( 'written_at', 'updated_at' ) as $group )
+                        if ( isset( $m[$group] ) && trim( $m[$group] ) !== '' && $this->parseDate( $m[$group] ) === null )
+                            $ok = false;
+                    if ( !$ok )
+                        continue;
+                    foreach ( $values as $field => $value )
+                        if ( !isset( $result['fields'][$field] ) )
+                            $result['fields'][$field] = $value;
+                    $read = true;
+                    break;
+                }
+                if ( !$read )
+                    $result['failures'][] = $text;
+            }
+    }
+
+    /**
+     * The authors of a page's comments (BylineCommentAuthorSelectors[], the whole page) as the list field
+     * "commenters", in order, each name once.
+     *
+     * @param DOMDocument $doc
+     * @param array $result
+     */
+    protected function commenters( DOMDocument $doc, array &$result )
+    {
+        $names = array();
+        foreach ( $this->rules->getList( 'BylineCommentAuthorSelectors' ) as $selector )
+            foreach ( expStaticImportDom::query( $doc, $selector ) as $element )
+            {
+                $name = trim( preg_replace( '/\s+/u', ' ', str_replace( "\xc2\xa0", ' ', $element->textContent ) ) );
+                if ( $name !== '' && !isset( $names[self::normalizeName( $name )] ) )
+                    $names[self::normalizeName( $name )] = $name;
+            }
+        if ( $names )
+            $result['fields']['commenters'] = array( 'names' => array_values( $names ) );
+    }
+
+    /**
+     * Every person a byline names, each once, in the order of the fields (written, updated, maintainers, commenters).
+     *
+     * @param array $fields the 'fields' of extract()
+     * @return array of names
+     */
+    public static function people( array $fields )
+    {
+        $people = array();
+        foreach ( $fields as $value )
+            foreach ( isset( $value['names'] ) ? (array)$value['names'] : ( isset( $value['name'] ) ? array( $value['name'] ) : array() ) as $name )
+                if ( trim( (string)$name ) !== '' && !isset( $people[self::normalizeName( $name )] ) )
+                    $people[self::normalizeName( $name )] = trim( preg_replace( '/\s+/u', ' ', (string)$name ) );
+        return array_values( $people );
     }
 
     /**

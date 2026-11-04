@@ -497,6 +497,8 @@ abstract class expStaticImportHtmlType implements expStaticImportTypeInterface
             'last_updated_by' => isset( $page['bylines']['updated']['name'] ) ? '{contributor:updated}' : '',
             'last_updated_at' => !empty( $page['bylines']['updated']['time'] ) ? (string)$page['bylines']['updated']['time'] : '',
             'maintainers' => !empty( $page['bylines']['maintainers']['names'] ) ? '{contributors:maintainers}' : '',
+            // every person the page names (writer, updater, maintainers, comment authors), each once
+            'contributors' => !empty( $page['bylines'] ) && expStaticImportByline::people( (array)$page['bylines'] ) ? '{contributors:*}' : '',
             'labels_tags' => self::tagsString( isset( $meta['labels'] ) ? (array)$meta['labels'] : array(), (string)$this->rules->get( 'TagParent', '0' ),
                                                (string)$this->rules->get( 'Language', 'eng-US' ) ),
             'metadata_xml' => self::metadataXml( $page['title'], isset( $meta['keywords'] ) ? (array)$meta['keywords'] : array(),
