@@ -778,13 +778,50 @@ abstract class expStaticImportHtmlType implements expStaticImportTypeInterface
         $links = array();
         if ( !preg_match_all( '/<a\b[^>]*\bhref=["\']([^"\']+)["\']/i', $page['body_html'], $m ) )
             return array();
-        foreach ( $m[1] as $href )
+        $hosts = array_map( 'strtolower', $this->rules->getList( 'LinkHosts' ) );
+        $suffixes = $this->rules->getList( 'AssetSuffixes' ) ?: array( 'png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'pdf', 'zip' );
+        foreach ( array_unique( $m[1] ) as $href )
         {
-            $target = expStaticImportDom::resolve( $page['path'], $href );
-            if ( $target !== null && preg_match( '/\.html?$/i', $target ) )
+            $decoded = html_entity_decode( $href, ENT_QUOTES, 'UTF-8' );
+            // a link by page id (Confluence: viewpage.action?pageId=123, or any href with pageId=): that page's object
+            if ( preg_match( '/[?&]pageId=(\d+)/', $decoded, $p ) && !preg_match( '/^[a-z][a-z0-9+.-]*:/i', $decoded ) )
+            {
+                $links[$href] = 'page:' . $p[1];
+                continue;
+            }
+            // a full URL of the site itself (LinkHosts[]): its path, from the top
+            if ( $hosts && preg_match( '#^https?://([^/:]+)(?::\d+)?(/[^?\#]*)?#i', $decoded, $u ) && in_array( strtolower( $u[1] ), $hosts, true ) )
+                $decoded = '/' . ltrim( isset( $u[2] ) ? $u[2] : '', '/' ) . ( strpos( $decoded, '#' ) !== false ? substr( $decoded, strpos( $decoded, '#' ) ) : '' );
+            $target = expStaticImportDom::resolve( $page['path'], $decoded );
+            if ( $target === null )
+                continue;
+            $extension = strtolower( pathinfo( $target, PATHINFO_EXTENSION ) );
+            if ( preg_match( '/\.html?$/i', $target ) || in_array( $extension, $suffixes, true ) )
                 $links[$href] = $target;
+            // a folder or an address without a suffix: its page, its index file or the group page of the folder
+            else if ( !preg_match( '/^[a-z]{2,5}$/', $extension ) )
+                $links[$href] = $this->pageOfAddress( $target );
         }
         return $links;
+    }
+
+    /**
+     * The page an address without a suffix stands for: <address>.html, <address>/<index file>, or the group page.
+     *
+     * @param string $target
+     * @return string
+     */
+    protected function pageOfAddress( $target )
+    {
+        $target = rtrim( $target, '/' );
+        $candidates = array( $target . '.html' );
+        foreach ( $this->rules->getList( 'IndexFiles' ) ?: array( 'index.html' ) as $index )
+            $candidates[] = ( $target === '' ? '' : $target . '/' ) . $index;
+        $candidates[] = $target . '/';
+        foreach ( $candidates as $candidate )
+            if ( isset( $this->known[$candidate] ) )
+                return $candidate;
+        return $candidates[0];
     }
 
     /**

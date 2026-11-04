@@ -44,7 +44,7 @@ class expStaticImportTreeRulesTest extends \PHPUnit\Framework\TestCase
             'GroupTitles' => array( 'display' => 'Spaces' ),
             'GroupTitleSelector' => '#breadcrumbs li.first a',
             'GroupClass' => 'exp_doc_section',
-            'AssetPages' => 'enabled',
+            'AssetPages' => 'enabled', 'LinkHosts' => array( 'doc.example' ),
             'DefaultClass' => 'exp_doc_page',
             'AttributeMap' => array( '*/title' => 'title', '*/body' => 'body' ),
         ) ) );
@@ -120,5 +120,19 @@ class expStaticImportTreeRulesTest extends \PHPUnit\Framework\TestCase
         $described = $this->type->parse( $this->source, 'Manual/Images/Described.html' );
         $this->assertArrayNotHasKey( 'asset_of', $described );
         $this->assertSame( 'Shot', $described['title'] );
+    }
+
+    public function testEveryInternalLinkFormResolvesToAPath()
+    {
+        $links = $this->type->links( $this->type->parse( $this->source, 'Manual/Links.html' ) );
+        // a folder without a suffix is the page of the folder
+        $this->assertSame( 'Manual/Images.html', $links['Images'] );
+        $this->assertSame( 'display/SPC/1.html', $links['../display/SPC/1.html'] );
+        // a link by page id is resolved by the id
+        $this->assertSame( 'page:100', $links['../pages/viewpage.action?pageId=100'] );
+        // a full URL of the site itself (LinkHosts[]) is a path from the top; another site's is left alone
+        $this->assertSame( 'Manual.html', $links['https://doc.example/Manual.html#top'] );
+        $this->assertArrayNotHasKey( 'https://elsewhere.example/x.html', $links );
+        $this->assertSame( 'Manual/storage/screen.png', $links['storage/screen.png'] );
     }
 }

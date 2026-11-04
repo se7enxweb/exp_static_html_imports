@@ -268,6 +268,7 @@ class expStaticImportEngine
     {
         $this->options['pull'] = false;
         $this->source = $this->prepareSource();
+        $this->loadStatePatches();
         $paths = $this->type->discover( $this->source );
         if ( method_exists( $this->type, 'setKnownPaths' ) )
             $this->type->setKnownPaths( $paths );
@@ -330,6 +331,23 @@ class expStaticImportEngine
      * pages) is written to <work folder>/state-patches/*.json, never into the state file, which that run would save
      * over. The next run merges each patch into the state, saves it, and renames the patch to .applied.
      */
+    /**
+     * The state patches not applied yet, merged into this process's memory only (a console step that follows another
+     * one, before a run has applied its patch)
+     */
+    protected function loadStatePatches()
+    {
+        $files = glob( $this->workDir . '/state-patches/*.json' ) ?: array();
+        sort( $files );
+        foreach ( $files as $file )
+        {
+            $patch = json_decode( (string)file_get_contents( $file ), true );
+            foreach ( is_array( $patch ) ? $patch : array() as $path => $values )
+                if ( is_array( $values ) )
+                    $this->state->setPage( (string)$path, $values );
+        }
+    }
+
     protected function applyStatePatches()
     {
         $files = glob( $this->workDir . '/state-patches/*.json' ) ?: array();
@@ -381,6 +399,7 @@ class expStaticImportEngine
         $this->options['dry_run'] = (bool)$dryRun;
         $this->report = array( 'counts' => array(), 'warnings' => array() );
         $this->source = $this->prepareSource();
+        $this->loadStatePatches();
         $paths = $this->type->discover( $this->source );
         if ( method_exists( $this->type, 'setKnownPaths' ) )
             $this->type->setKnownPaths( $paths );
@@ -512,6 +531,89 @@ class expStaticImportEngine
         $attribute->store();
         $object->addContentObjectRelation( (int)$toID, (int)$object->attribute( 'current_version' ), (int)$attribute->attribute( 'contentclassattribute_id' ) );
         return 1;
+    }
+
+    /**
+     * The links of the pages an earlier run imported, written again where a link that was left as a static path can
+     * be resolved now (exp:static-import:relink): each such page is imported again from the source, as the links phase
+     * of a run does, with the state kept in memory; what the next run must know (the page's new hashes and its links
+     * still unresolved) goes into a state patch. Safe while a run is going on.
+     *
+     * @param array $patterns shell patterns of the source paths (empty: all)
+     * @param bool $dryRun only count
+     * @return array( 'pages' => checked, 'rewritten' => n, 'links' => resolved now, 'unresolved' => n, 'targets' => the
+     *                unresolved targets by count )
+     */
+    public function relinkExisting( array $patterns = array(), $dryRun = false )
+    {
+        $this->options['pull'] = false;
+        $this->report = array( 'counts' => array( 'created' => 0, 'updated' => 0, 'unchanged' => 0, 'flagged' => 0, 'failed' => 0, 'duplicates' => 0,
+                                                  'hidden' => 0, 'removed' => 0, 'links' => 0 ), 'flagged' => array(), 'failed' => array(), 'removed' => array(),
+                               'byline_failures' => array(), 'warnings' => array() );
+        $this->source = $this->prepareSource();
+        $paths = $this->type->discover( $this->source );
+        if ( method_exists( $this->type, 'setKnownPaths' ) )
+            $this->type->setKnownPaths( $paths );
+        $user = $this->actAs();
+        $this->loadStatePatches();
+        $out = array( 'pages' => 0, 'rewritten' => 0, 'links' => 0, 'unresolved' => 0, 'targets' => array(), 'flagged' => 0, 'failed' => 0, 'patch' => '' );
+        $patch = array();
+        $n = 0;
+        foreach ( array_keys( $this->state->data['pages'] ) as $path )
+        {
+            $path = (string)$path;
+            $entry = $this->state->page( $path );
+            if ( empty( $entry['object_id'] ) || empty( $entry['unresolved'] ) || strpos( $path, '#' ) !== false
+                 || ( isset( $entry['status'] ) && in_array( $entry['status'], array( 'removed', 'duplicate', 'failed', 'flagged' ), true ) ) )
+                continue;
+            if ( $patterns && !expStaticImportHtmlType::matchesAny( $path, $patterns ) )
+                continue;
+            $out['pages']++;
+            if ( ++$n % 50 === 0 )
+                eZContentObject::clearCache();
+            $resolvable = false;
+            foreach ( (array)$entry['unresolved'] as $target )
+                if ( $this->state->nodeOf( $target ) || $this->state->asset( $target )
+                     || ( strpos( (string)$target, 'page:' ) === 0 && $this->objectByPageId( substr( (string)$target, 5 ) ) ) )
+                {
+                    $resolvable = true;
+                    break;
+                }
+            if ( !$resolvable )
+            {
+                foreach ( (array)$entry['unresolved'] as $target )
+                    $out['targets'][$target] = ( isset( $out['targets'][$target] ) ? $out['targets'][$target] : 0 ) + 1;
+                $out['unresolved'] += count( (array)$entry['unresolved'] );
+                continue;
+            }
+            if ( $dryRun )
+            {
+                $out['rewritten']++;
+                continue;
+            }
+            $links = $this->report['counts']['links'];
+            $failed = $this->report['counts']['failed'];
+            $flagged = $this->report['counts']['flagged'];
+            $this->state->setPage( $path, array( 'source_hash' => '' ) );
+            $this->importPage( $path, $user );
+            $after = $this->state->page( $path );
+            $out['links'] += $this->report['counts']['links'] - $links;
+            $out['failed'] += $this->report['counts']['failed'] - $failed;
+            $out['flagged'] += $this->report['counts']['flagged'] - $flagged;
+            if ( $after && isset( $after['written_hash'] ) && $this->report['counts']['failed'] === $failed && $this->report['counts']['flagged'] === $flagged )
+            {
+                $out['rewritten']++;
+                $patch[$path] = array_intersect_key( $after, array_flip( array( 'source_hash', 'written_hash', 'written_fields', 'unresolved', 'node_id', 'object_id' ) ) );
+                foreach ( (array)$after['unresolved'] as $target )
+                    $out['targets'][$target] = ( isset( $out['targets'][$target] ) ? $out['targets'][$target] : 0 ) + 1;
+                $out['unresolved'] += count( (array)$after['unresolved'] );
+            }
+        }
+        if ( !$dryRun )
+            $out['patch'] = $this->writeStatePatch( $patch, 'relink' );
+        arsort( $out['targets'] );
+        $out['targets'] = array_slice( $out['targets'], 0, 100, true );
+        return $out;
     }
 
     /** @var array page id => object id (0: none), objectByPageId()'s memory */
@@ -654,6 +756,7 @@ class expStaticImportEngine
     {
         $this->options['pull'] = false;
         $this->source = $this->prepareSource();
+        $this->loadStatePatches();
         $paths = $this->type->discover( $this->source );
         if ( method_exists( $this->type, 'setKnownPaths' ) )
             $this->type->setKnownPaths( $paths );
@@ -1170,6 +1273,9 @@ class expStaticImportEngine
             $this->assetPaths[$asset] = $this->state->data['pending_assets'][$asset] = true;
 
         $parentNode = $page['parent_path'] !== '' ? $this->state->nodeOf( $page['parent_path'] ) : $this->parentNode();
+        // a parent the state does not know yet (made by a console step, such as a route container) by its remote id
+        if ( !$parentNode && $page['parent_path'] !== '' && ( $parentObject = eZContentObject::fetchByRemoteID( self::remoteID( $this->label, $page['parent_path'] ) ) ) )
+            $parentNode = (int)$parentObject->attribute( 'main_node_id' );
         if ( !$parentNode )
             $parentNode = $this->parentNode();
 
@@ -1363,7 +1469,15 @@ class expStaticImportEngine
         $unresolved = array();
         foreach ( $links as $href => $target )
         {
-            $node = $this->state->nodeOf( $target );
+            // page:<id>: the current page with that page id (a Confluence link by id)
+            if ( strpos( (string)$target, 'page:' ) === 0 )
+            {
+                $objectID = $this->objectByPageId( substr( (string)$target, 5 ) );
+                $object = $objectID ? eZContentObject::fetch( $objectID ) : null;
+                $node = $object ? (int)$object->attribute( 'main_node_id' ) : 0;
+            }
+            else
+                $node = $this->state->nodeOf( $target );
             if ( !$node )
             {
                 $unresolved[] = $target;
