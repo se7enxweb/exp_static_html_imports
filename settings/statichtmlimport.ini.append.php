@@ -43,7 +43,8 @@ TypeList[sitemap-crawl]=expStaticImportTypeSitemapCrawl
 #                                     modified, labels, description, keywords, import_hash, version (doc-html)
 #   AssetClassRules[]=<shell pattern>;<class>  AssetAttributeMap[<class>/<attribute>]=<field> (file, title, alt,
 #                                     caption, credit, source_path)
-#   IncludePaths[] ExcludePaths[] HiddenPaths[] DuplicatePatterns[] (regular expressions) DeduplicateAll
+#   IncludePaths[] ExcludePaths[] HiddenPaths[] VisiblePaths[] (exceptions to HiddenPaths[]) DuplicatePatterns[] (regular
+#                                     expressions) DeduplicateAll
 #   CreateRedirects (default enabled)  RedirectPrefix   old paths answer with a redirect to their node
 #   DateRules[]=<created|modified>;<source>[;<arguments>[;<label>[;<paths>]]]   the real dates of every object (its
 #                                     published and modified dates, its versions'), the first rule of a field that

@@ -67,7 +67,7 @@ class expStaticImportTypeMarkdown extends expStaticImportHtmlType
             'body_html' => $bodyHtml,
             'original_html' => $text,
             'meta' => $metaOut,
-            'hidden' => self::matchesAny( $path, $this->rules->getList( 'HiddenPaths' ) ),
+            'hidden' => self::isHiddenPath( $path, $this->rules ),
             'aliases' => array(),
             'priority' => isset( $meta['order'] ) ? (int)$meta['order'] : 0,
         );

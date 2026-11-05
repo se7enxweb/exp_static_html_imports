@@ -821,7 +821,7 @@ class expStaticImportEngine
             if ( !$dryRun && $container > 0 )
                 eZContentObjectTreeNodeOperations::move( (int)$node->attribute( 'node_id' ), $container );
         }
-        if ( (int)$node->attribute( 'is_hidden' ) && !expStaticImportHtmlType::matchesAny( $path, $this->rules->getList( 'HiddenPaths' ) ) )
+        if ( (int)$node->attribute( 'is_hidden' ) && !expStaticImportHtmlType::isHiddenPath( $path, $this->rules ) )
         {
             $out['shown']++;
             if ( !$dryRun )

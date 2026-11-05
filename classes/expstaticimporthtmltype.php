@@ -16,6 +16,7 @@
  *   IncludePaths[]           shell patterns of the paths that are pages (empty: all)
  *   ExcludePaths[]           shell patterns left out
  *   HiddenPaths[]            shell patterns of pages imported hidden (reachable, not listed)
+ *   VisiblePaths[]           shell patterns of pages that stay visible although HiddenPaths[] matches them
  *   IndexFiles[]             the file that is a folder's own page (default index.html)
  *   TitleSelector            the title (default h1); falls back to <title> without TitleSuffixPatterns[]
  *   BodySelector             the body (default body)
@@ -758,7 +759,7 @@ abstract class expStaticImportHtmlType implements expStaticImportTypeInterface
             'body_html' => $body === '' ? '' : '<p>' . htmlspecialchars( str_replace( '{title}', $this->groups[$path], $body ), ENT_QUOTES, 'UTF-8' ) . '</p>',
             'original_html' => '',
             'meta' => array( 'labels' => array(), 'modified' => null ),
-            'hidden' => self::matchesAny( $path, $this->rules->getList( 'HiddenPaths' ) ),
+            'hidden' => self::isHiddenPath( $path, $this->rules ),
             'aliases' => array(),
             'duplicate_candidate' => false,
             'bylines' => array(),
@@ -1149,7 +1150,7 @@ abstract class expStaticImportHtmlType implements expStaticImportTypeInterface
             'body_html' => $bodyHtml,
             'original_html' => trim( $original ),
             'meta' => $meta,
-            'hidden' => self::matchesAny( $path, $this->rules->getList( 'HiddenPaths' ) ),
+            'hidden' => self::isHiddenPath( $path, $this->rules ),
             'aliases' => array(),
             'duplicate_candidate' => $this->isDuplicateCandidate( $path ),
             'bylines' => $bylines['fields'],
@@ -1467,5 +1468,19 @@ abstract class expStaticImportHtmlType implements expStaticImportTypeInterface
             if ( self::matches( $path, $pattern ) )
                 return true;
         return false;
+    }
+
+    /**
+     * Whether a page is imported hidden: HiddenPaths[] matches it and VisiblePaths[] does not (a page an editor moved
+     * out of a hidden folder, e.g. the credits page of the hidden mirror, stays visible).
+     *
+     * @param string $path
+     * @param expStaticImportRules $rules
+     * @return bool
+     */
+    public static function isHiddenPath( $path, $rules )
+    {
+        return self::matchesAny( $path, $rules->getList( 'HiddenPaths' ) ) &&
+               !self::matchesAny( $path, $rules->getList( 'VisiblePaths' ) );
     }
 }
