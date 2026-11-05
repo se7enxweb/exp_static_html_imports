@@ -98,6 +98,56 @@ class expStaticImportCodeBlocksTest extends \PHPUnit\Framework\TestCase
         $this->assertStringContainsString( 'lang|php', $html );
     }
 
+    /**
+     * The code blocks of the content/list fetch function page keep every line and its indentation: what the cleaner
+     * gives is the source's text line for line (no-break spaces as spaces, nothing at the end of a line), and what
+     * goes to the online editor's parser has each line break as <br /> (a raw line break inside <pre> is dropped by
+     * it: the stored code was one long line, "[MyFilter]#The name of the extension...").
+     */
+    public function testTheLinesAndTheIndentationOfEveryCodeBlockAreKept()
+    {
+        $html = $this->clean( $this->rules(), file_get_contents( __DIR__ . '/fixtures/code-blocks/fetch-functions-list.html' ) );
+        $this->assertSame( 3, preg_match_all( '#<pre class="([^"]*)">(.*?)</pre>#s', $html, $m ) );
+        $texts = array_map( function ( $text ) { return html_entity_decode( $text, ENT_QUOTES, 'UTF-8' ); }, $m[2] );
+
+        // the fetch() usage, its columns of spaces as the source has them
+        $this->assertStringStartsWith( "fetch( 'content', 'list',\n hash( 'parent_node_id',            parent_node_id,\n     [ 'sort_by',", $texts[0] );
+        // the INI block: a line per setting, the empty lines kept
+        $this->assertStringStartsWith( "#The name of the filter.\n[MyFilter]\n\n#The name of the extension where the filtering code is defined.\nExtensionName=myextension\n", $texts[1] );
+        // the PHP class: its indentation, line by line
+        $this->assertStringStartsWith( "class eZMyExtendedFilter\n{\n    /*!\n     Constructor\n    */\n    public function __construct()\n    {\n        // Empty...\n    }\n\n    public function createSqlParts( \$params )\n    {\n        \$sqlTables= ', ezmyfiltertable ';", $texts[2] );
+        foreach ( $texts as $text )
+        {
+            $this->assertStringNotContainsString( "\xc2\xa0", $text );
+            $this->assertDoesNotMatchRegularExpression( '/[ \t]$/m', $text, 'no white space at the end of a line' );
+            $this->assertDoesNotMatchRegularExpression( '/^\n|\n$/', $text, 'no empty first or last line' );
+        }
+
+        // to the parser: each line break of a <pre> as <br />, nothing else changed
+        $parserInput = expStaticImportHtmlCleaner::preLinesAsBreaks( $html );
+        $this->assertSame( 3, preg_match_all( '#<pre class="([^"]*)">(.*?)</pre>#s', $parserInput, $p ) );
+        foreach ( $p[2] as $i => $text )
+        {
+            $this->assertStringNotContainsString( "\n", $text );
+            $this->assertSame( $m[2][$i], str_replace( '<br />', "\n", $text ) );
+        }
+        $this->assertSame( str_replace( $m[0], '', $html ), str_replace( $p[0], '', $parserInput ) );
+    }
+
+    public function testCodeTextKeepsRelativeIndentationAndTakesOnlyWhatTheHtmlAdded()
+    {
+        // a shared indent from the HTML's formatting goes; one line against another keeps its indent; tabs stay
+        $this->assertSame( "if ( \$a )\n{\n\treturn 1;\n}", expStaticImportHtmlCleaner::codeText( "\r\n    if ( \$a )   \r\n    {\r\n    \treturn 1;\r\n    }\r\n\r\n" ) );
+        // no-break spaces are spaces; an empty line inside stays
+        $this->assertSame( "a\n\n  b", expStaticImportHtmlCleaner::codeText( "a\n\xc2\xa0\n\xc2\xa0\xc2\xa0b" ) );
+        // nothing shared: nothing taken
+        $this->assertSame( "x\n  y", expStaticImportHtmlCleaner::codeText( "x\n  y" ) );
+        // a <pre> with <br> and plain text, not a literal selector: its lines too
+        $html = $this->clean( $this->rules(), '<html><body><pre>  one<br>    two<br/>  three</pre></body></html>' );
+        $this->assertStringContainsString( "<pre>one\n  two\nthree</pre>", $html );
+        $this->assertSame( '<pre>one<br />  two<br />three</pre>', expStaticImportHtmlCleaner::preLinesAsBreaks( "<pre>one\r\n  two\nthree</pre>" ) );
+    }
+
     public function testWithoutCodeSelectorsTheRemoveSelectorsWorkAsBefore()
     {
         $rules = $this->rules();

@@ -3038,7 +3038,8 @@ class expStaticImportEngine
             $parser = new eZOEInputParser();
         if ( $parser )
         {
-            $dom = $parser->process( $html );
+            // the parser drops a raw line break inside <pre>: the lines of every code block go to it as <br />
+            $dom = $parser->process( expStaticImportHtmlCleaner::preLinesAsBreaks( $html ) );
             if ( $dom instanceof DOMDocument )
                 return eZXMLTextType::domString( $dom );
         }

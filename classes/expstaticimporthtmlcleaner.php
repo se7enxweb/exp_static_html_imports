@@ -80,9 +80,7 @@ class expStaticImportHtmlCleaner
         foreach ( $this->rules->getList( 'LiteralSelectors' ) as $selector )
             foreach ( $this->toArray( expStaticImportDom::query( $doc, $selector, $body ) ) as $node )
             {
-                $lines = $lineSelector !== '' ? $this->toArray( expStaticImportDom::query( $doc, $lineSelector, $node ) ) : array();
-                $text = $lines ? implode( "\n", array_map( function ( $line ) { return rtrim( str_replace( "\xc2\xa0", ' ', $line->textContent ) ); }, $lines ) )
-                               : rtrim( str_replace( "\xc2\xa0", ' ', $node->textContent ) );
+                $text = $this->blockText( $doc, $node, $lineSelector );
                 $pre = $doc->createElement( 'pre' );
                 if ( $node->getAttribute( 'class' ) !== '' )
                     $pre->setAttribute( 'class', trim( preg_replace( '/\s+/', ' ', $node->getAttribute( 'class' ) ) ) );
@@ -105,6 +103,20 @@ class expStaticImportHtmlCleaner
             foreach ( $this->toArray( expStaticImportDom::query( $doc, $selector, $body ) ) as $node )
                 if ( $node->getAttribute( 'data-static-import' ) !== 'literal' )
                     $this->convertCode( $doc, $node );
+        // every other <pre> of plain text (no links or styles inside): its text as a code block's (codeText())
+        foreach ( $this->toArray( $body->getElementsByTagName( 'pre' ) ) as $node )
+            if ( !$node->hasAttribute( 'data-static-import' ) )
+            {
+                foreach ( $this->toArray( $node->getElementsByTagName( 'br' ) ) as $br )
+                    $br->parentNode->replaceChild( $doc->createTextNode( "\n" ), $br );
+                if ( !$node->getElementsByTagName( '*' )->length )
+                {
+                    $text = self::codeText( $node->textContent );
+                    while ( $node->firstChild )
+                        $node->removeChild( $node->firstChild );
+                    $node->appendChild( $doc->createTextNode( $text ) );
+                }
+            }
         foreach ( iterator_to_array( $xpath->query( './/*[@data-static-import]', $body ) ) as $node )
             $node->removeAttribute( 'data-static-import' );
 
@@ -141,6 +153,88 @@ class expStaticImportHtmlCleaner
     }
 
     /**
+     * The text of a code block, line by line: the elements of CodeLineSelector one per line when the block has them,
+     * else its text, with its <br> as line breaks.
+     *
+     * @param DOMDocument $doc
+     * @param DOMElement $node
+     * @param string $lineSelector
+     * @return string
+     */
+    protected function blockText( DOMDocument $doc, DOMElement $node, $lineSelector )
+    {
+        $lines = $lineSelector !== '' ? $this->toArray( expStaticImportDom::query( $doc, $lineSelector, $node ) ) : array();
+        if ( $lines )
+            return self::codeText( implode( "\n", array_map( function ( $line ) { return $line->textContent; }, $lines ) ) );
+        foreach ( $this->toArray( $node->getElementsByTagName( 'br' ) ) as $br )
+            $br->parentNode->replaceChild( $doc->createTextNode( "\n" ), $br );
+        return self::codeText( $node->textContent );
+    }
+
+    /**
+     * The text of a code block as it is stored: every line break, tab and space of the code kept, with only what the
+     * old site's HTML added taken away: line breaks as \n (CRLF, CR), no-break spaces as spaces, the white space at the
+     * end of each line, the empty lines before the first and after the last line, and an indent every line shares
+     * (the HTML's own formatting; the indentation of one line against another stays exactly).
+     *
+     * @param string $text
+     * @return string
+     */
+    public static function codeText( $text )
+    {
+        $text = str_replace( array( "\r\n", "\r", "\xc2\xa0" ), array( "\n", "\n", ' ' ), (string)$text );
+        $lines = array_map( 'rtrim', explode( "\n", $text ) );
+        while ( $lines && $lines[0] === '' )
+            array_shift( $lines );
+        while ( $lines && end( $lines ) === '' )
+            array_pop( $lines );
+        $indent = null;
+        foreach ( $lines as $line )
+        {
+            if ( $line === '' )
+                continue;
+            preg_match( '/^[ \t]*/', $line, $m );
+            $indent = $indent === null ? $m[0] : self::commonPrefix( $indent, $m[0] );
+            if ( $indent === '' )
+                break;
+        }
+        if ( $indent )
+            foreach ( $lines as $i => $line )
+                $lines[$i] = $line === '' ? '' : substr( $line, strlen( $indent ) );
+        return implode( "\n", $lines );
+    }
+
+    /**
+     * The HTML for the online editor's input parser: the line breaks inside each <pre> written as <br />, which the
+     * parser turns into the line breaks of the literal (a raw line break inside <pre> is dropped by it, and a code
+     * block became one long line).
+     *
+     * @param string $html
+     * @return string
+     */
+    public static function preLinesAsBreaks( $html )
+    {
+        return preg_replace_callback( '#(<pre\b[^>]*>)(.*?)(</pre>)#is', function ( $m )
+        {
+            return $m[1] . str_replace( "\n", '<br />', str_replace( array( "\r\n", "\r" ), "\n", $m[2] ) ) . $m[3];
+        }, (string)$html );
+    }
+
+    /**
+     * @param string $a
+     * @param string $b
+     * @return string
+     */
+    protected static function commonPrefix( $a, $b )
+    {
+        $n = min( strlen( $a ), strlen( $b ) );
+        $i = 0;
+        while ( $i < $n && $a[$i] === $b[$i] )
+            $i++;
+        return substr( $a, 0, $i );
+    }
+
+    /**
      * A code block becomes <div type="custom" class="doc_code" customattributes="lang|..."><pre>text</pre></div>.
      *
      * @param DOMDocument $doc
@@ -148,12 +242,7 @@ class expStaticImportHtmlCleaner
      */
     protected function convertCode( DOMDocument $doc, DOMElement $node )
     {
-        $lineSelector = (string)$this->rules->get( 'CodeLineSelector', '' );
-        $lines = $lineSelector !== '' ? $this->toArray( expStaticImportDom::query( $doc, $lineSelector, $node ) ) : array();
-        if ( $lines )
-            $text = implode( "\n", array_map( function ( $line ) { return rtrim( str_replace( "\xc2\xa0", ' ', $line->textContent ) ); }, $lines ) );
-        else
-            $text = rtrim( str_replace( "\xc2\xa0", ' ', $node->textContent ) );
+        $text = $this->blockText( $doc, $node, (string)$this->rules->get( 'CodeLineSelector', '' ) );
         $language = '';
         $class = (string)$node->getAttribute( 'class' ) . ' ' . (string)$node->getAttribute( 'data-syntaxhighlighter-params' ) . ' ' . (string)$node->getAttribute( 'data-lang' );
         foreach ( $this->rules->getList( 'CodeLanguagePatterns' ) as $pattern )
