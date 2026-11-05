@@ -49,10 +49,23 @@ class expStaticImportHtmlCleaner
         foreach ( array( 'script', 'style', 'noscript', 'iframe', 'object', 'form', 'input', 'button', 'select', 'textarea' ) as $tag )
             foreach ( iterator_to_array( $body->getElementsByTagName( $tag ) ) as $node )
                 $node->parentNode->removeChild( $node );
+        // a code block (LiteralSelectors[], CodeSelectors[]) and what is inside one are never removed, even when a
+        // remove selector matches them too: the old documentation's code is <pre class="wordwrap copytoclipboard">,
+        // and ".copytoclipboard", meant for the copy button next to it, took the listings with it
+        $code = array();
+        foreach ( array_merge( $this->rules->getList( 'LiteralSelectors' ), $this->rules->getList( 'CodeSelectors' ) ) as $selector )
+            foreach ( $this->toArray( expStaticImportDom::query( $doc, $selector, $body ) ) as $node )
+                $code[] = $node;
         foreach ( $this->rules->getList( 'RemoveSelectors' ) as $selector )
             foreach ( $this->toArray( expStaticImportDom::query( $doc, $selector, $body ) ) as $node )
-                if ( $node->parentNode )
-                    $node->parentNode->removeChild( $node );
+            {
+                if ( !$node->parentNode )
+                    continue;
+                for ( $up = $node; $code && $up instanceof DOMElement; $up = $up->parentNode )
+                    if ( in_array( $up, $code, true ) )
+                        continue 2;
+                $node->parentNode->removeChild( $node );
+            }
         foreach ( $this->rules->getList( 'UnwrapSelectors' ) as $selector )
             foreach ( $this->toArray( expStaticImportDom::query( $doc, $selector, $body ) ) as $node )
                 $this->unwrap( $node );
