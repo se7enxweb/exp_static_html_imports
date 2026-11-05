@@ -73,6 +73,11 @@ TypeList[sitemap-crawl]=expStaticImportTypeSitemapCrawl
 #                          e.g. /<!-- Mirrored from (\S+) by HTTrack/): links by the old address find the file
 #   LinkForwardParameters[] query parameters carrying the address a link forwards to (default os_destination)
 #   exp:static-import:links rewrites the bodies stored before a target existed (in place, resumable)
+# Order (expStaticImportOrder): OrderSelectors[] where a page lists its children (its table of contents, its child
+#   list): the children a container's own page links there get the priorities 10, 20 ... in that order, the others
+#   follow by name, and the container sorts by priority. OrderIgnoreClasses[] (children that keep their priority, such
+#   as comments), OrderSkipNodes[] (containers never touched), OrderStep (default 10). A run orders the containers it
+#   created pages in; exp:static-import:order orders every imported container (no new versions, no edits).
 # ---------------------------------------------------------------------------------------------------------------------
 
 [Type_html-generic]

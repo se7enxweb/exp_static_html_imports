@@ -89,6 +89,9 @@ class expStaticImportEngine
     /** @var array object id => path, the objects of this run whose dates wait for their children */
     protected $datesPending = array();
 
+    /** @var array node id => true, the containers this run created pages in (their order is read at the end) */
+    protected $createdParents = array();
+
     /** @var expStaticImportByline|null the byline reader of the type's rules, for contributor names */
     protected $bylineParser = null;
 
@@ -263,6 +266,12 @@ class expStaticImportEngine
         // the sections and containers of this run that have no dates of their own take their children's
         if ( $this->datesPending && !$this->options['dry_run'] )
             $this->report['counts']['dated_by_children'] = $this->datePendingContainers( $this->datesPending );
+        // the containers this run created pages in list their children in the source page's order (OrderSelectors[])
+        if ( $this->createdParents && !$this->options['dry_run'] && $this->rules->getList( 'OrderSelectors' ) )
+        {
+            $order = expStaticImportOrder::run( $this, array( 'nodes' => array_keys( $this->createdParents ) ) );
+            $this->report['counts']['ordered_containers'] = $order['ordered'];
+        }
         $this->finishDeferredWork( $deferred );
         $this->report['seconds'] = round( microtime( true ) - $started, 1 );
         $this->report['finished'] = date( 'c' );
@@ -2381,6 +2390,7 @@ class expStaticImportEngine
                 return;
             }
             $status = 'created';
+            $this->createdParents[(int)$parentNode] = true;
         }
 
         // read back what was published (datatypes may normalise a value on publish), so the written hash is of what
@@ -2784,6 +2794,14 @@ class expStaticImportEngine
     public function workDirectory()
     {
         return $this->workDir;
+    }
+
+    /**
+     * @return string the source folder (prepared by prepareForConsoleStep() or the run)
+     */
+    public function sourceDirectory()
+    {
+        return $this->source ?: ( $this->source = $this->prepareSource() );
     }
 
     public function label()
