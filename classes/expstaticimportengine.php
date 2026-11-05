@@ -3204,8 +3204,8 @@ class expStaticImportEngine
      * @param array $options dry_run, restart, batch (objects per batch, default 200), limit (objects, for a test),
      *                       index (queue, now or none; default queue), paths (shell patterns of source paths),
      *                       skip (object id => true, see expStaticImportDates::parseSkipList(): objects whose dates
-     *                       stay as they are, such as pages an editor changed in the CMS; they give no dates to their
-     *                       containers either)
+     *                       stay as they are, such as pages an editor changed in the CMS; their containers count them
+     *                       with the dates they keep)
      * @param callable|null $progress receives (done, of)
      * @return array the report: counts by source, the year spread per family, the objects still dated today
      */
@@ -3300,6 +3300,10 @@ class expStaticImportEngine
                 {
                     if ( isset( $options['skip'][$id] ) )
                     {
+                        // its dates stay, and count for its container like those of any other child
+                        $kept = $db->arrayQuery( 'SELECT published, modified FROM ezcontentobject WHERE status = 1 AND id = ' . (int)$id );
+                        if ( $kept )
+                            $state['kept'][$id] = array( (int)$kept[0]['published'], (int)$kept[0]['modified'] );
                         $skipped++;
                         continue;
                     }
@@ -3367,6 +3371,9 @@ class expStaticImportEngine
             $known = array();
             foreach ( $state['resolved'] as $id => $row )
                 $known[(int)$id] = array( $row[0], $row[1] );
+            foreach ( isset( $state['kept'] ) ? $state['kept'] : array() as $id => $row )
+                if ( !isset( $known[(int)$id] ) )
+                    $known[(int)$id] = array( $row[0], $row[1] );
             $changedIDs = array();
             foreach ( $items as $item )
             {
@@ -3409,6 +3416,7 @@ class expStaticImportEngine
         $report['pending'] = count( $state['pending'] );
         $report['skip_list'] = count( $options['skip'] );
         $report['skipped'] = $skipped;
+        $report['kept'] = isset( $state['kept'] ) ? count( $state['kept'] ) : 0;
         $report['phase'] = $state['phase'];
         $report['dry_run'] = (bool)$options['dry_run'];
         $report['index'] = $options['index'];
