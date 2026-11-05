@@ -2875,7 +2875,10 @@ class expStaticImportEngine
         }
         // forgetting the source hash makes importPage() write the page again with the links it can now resolve
         $this->state->setPage( $path, array( 'source_hash' => '' ) );
-        $this->importPage( $path, $user );
+        // a page a page carries (a comment, "<page>#comment<id>") has no file of its own: the page it belongs to is
+        // written again, with its comments (importing the comment's own path found no page and hid the comment)
+        $hash = strpos( (string)$path, '#' );
+        $this->importPage( $hash !== false ? substr( (string)$path, 0, $hash ) : $path, $user );
         unset( $this->state->data['pending_links'][$path] );
     }
 
