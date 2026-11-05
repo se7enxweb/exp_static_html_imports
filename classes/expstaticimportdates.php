@@ -296,6 +296,24 @@ class expStaticImportDates
     }
 
     /**
+     * The object ids of a skip list (exp:static-import:dates --skip-file): one object per line, its id the first word;
+     * the rest of the line (a path, a reason) is a comment, as are lines starting with "#", empty lines and lines that
+     * do not start with a number.
+     *
+     * @param string $text
+     * @return array object id => true, by id
+     */
+    public static function parseSkipList( $text )
+    {
+        $ids = array();
+        foreach ( preg_split( '/\r\n|\r|\n/', (string)$text ) as $line )
+            if ( preg_match( '/^\s*([0-9]+)(?:\s|$)/', $line, $m ) && (int)$m[1] > 0 )
+                $ids[(int)$m[1]] = true;
+        ksort( $ids );
+        return $ids;
+    }
+
+    /**
      * @param string $path
      * @param array $patterns shell patterns ("**" crosses folders, "*" does not)
      * @return bool

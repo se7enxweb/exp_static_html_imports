@@ -3202,13 +3202,18 @@ class expStaticImportEngine
      * objects are queued for the search index (or indexed now) and their view caches cleared, batch by batch.
      *
      * @param array $options dry_run, restart, batch (objects per batch, default 200), limit (objects, for a test),
-     *                       index (queue, now or none; default queue), paths (shell patterns of source paths)
+     *                       index (queue, now or none; default queue), paths (shell patterns of source paths),
+     *                       skip (object id => true, see expStaticImportDates::parseSkipList(): objects whose dates
+     *                       stay as they are, such as pages an editor changed in the CMS; they give no dates to their
+     *                       containers either)
      * @param callable|null $progress receives (done, of)
      * @return array the report: counts by source, the year spread per family, the objects still dated today
      */
     public function restoreDates( array $options = array(), $progress = null )
     {
-        $options = array_merge( array( 'dry_run' => false, 'restart' => false, 'batch' => 200, 'limit' => 0, 'index' => 'queue', 'paths' => array() ), $options );
+        $options = array_merge( array( 'dry_run' => false, 'restart' => false, 'batch' => 200, 'limit' => 0, 'index' => 'queue', 'paths' => array(),
+                                       'skip' => array() ), $options );
+        $skipped = 0;
         $this->options['pull'] = false;
         $this->options['dry_run'] = (bool)$options['dry_run'];
         $this->report = array( 'counts' => array(), 'warnings' => array() );
@@ -3293,6 +3298,11 @@ class expStaticImportEngine
                 $changedIDs = array();
                 foreach ( $batchIDs as $id )
                 {
+                    if ( isset( $options['skip'][$id] ) )
+                    {
+                        $skipped++;
+                        continue;
+                    }
                     $object = eZContentObject::fetch( $id );
                     if ( !$object instanceof eZContentObject || (int)$object->attribute( 'status' ) !== eZContentObject::STATUS_PUBLISHED )
                         continue;
@@ -3361,6 +3371,13 @@ class expStaticImportEngine
             foreach ( $items as $item )
             {
                 list( $id, $nodeID, , $entry ) = $item;
+                if ( isset( $options['skip'][$id] ) )
+                {
+                    // waiting from a run without this skip list
+                    unset( $state['pending'][$id] );
+                    $skipped++;
+                    continue;
+                }
                 $object = eZContentObject::fetch( $id );
                 $dates = $chain->resolve( $entry[0], null, $this->childrenDates( $nodeID, $known ),
                                           $object ? $this->relatedDates( $object, $state['resolved'], true ) : null );
@@ -3390,6 +3407,8 @@ class expStaticImportEngine
         $report = self::datesReport( $state['resolved'] );
         $report['changed'] = (int)$state['changed'];
         $report['pending'] = count( $state['pending'] );
+        $report['skip_list'] = count( $options['skip'] );
+        $report['skipped'] = $skipped;
         $report['phase'] = $state['phase'];
         $report['dry_run'] = (bool)$options['dry_run'];
         $report['index'] = $options['index'];

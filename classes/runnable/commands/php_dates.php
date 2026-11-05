@@ -30,13 +30,16 @@ class Dates extends \Exponential\Runnable\Command
                 . "  --limit=<n>        stop after about n objects (a test; the next call resumes)\n"
                 . "  --index=<mode>     queue (default: for the cronjob indexcontent), now, or none\n"
                 . "  --path=<pattern>   only these source paths (shell pattern, may be repeated)\n"
+                . "  --skip-file=<file> leave the dates of these objects as they are (one object id per line, the first\n"
+                . "                     word; the rest of the line and lines starting with # are comments): pages an\n"
+                . "                     editor changed in the CMS\n"
                 . "  --format=json      the report as JSON",
             'use-session' => false, 'use-modules' => true, 'use-extensions' => true
         ) );
-        $options = $this->startup( '[type:][dry-run][restart][batch:][limit:][index:][path:*][format:]', '',
+        $options = $this->startup( '[type:][dry-run][restart][batch:][limit:][index:][path:*][skip-file:][format:]', '',
                                    array( 'type' => 'The import type', 'dry-run' => 'Change nothing', 'restart' => 'Start from the first object',
                                           'batch' => 'Objects per batch', 'limit' => 'Stop after about n objects', 'index' => 'queue, now or none',
-                                          'path' => 'Only these paths', 'format' => 'text or json' ) );
+                                          'path' => 'Only these paths', 'skip-file' => 'Object ids to leave alone', 'format' => 'text or json' ) );
         $type = !empty( $options['type'] ) ? ltrim( (string)$options['type'], '-' ) : '';
         $index = !empty( $options['index'] ) ? (string)$options['index'] : 'queue';
         if ( $type === '' || !in_array( $index, array( 'queue', 'now', 'none' ), true ) )
@@ -45,12 +48,23 @@ class Dates extends \Exponential\Runnable\Command
             $this->shutdown( 2 );
             return 2;
         }
+        $skip = array();
+        if ( !empty( $options['skip-file'] ) )
+        {
+            if ( !is_file( (string)$options['skip-file'] ) || !is_readable( (string)$options['skip-file'] ) )
+            {
+                $this->output( 'FAIL the skip file ' . $options['skip-file'] . ' cannot be read' );
+                $this->shutdown( 2 );
+                return 2;
+            }
+            $skip = \expStaticImportDates::parseSkipList( (string)file_get_contents( (string)$options['skip-file'] ) );
+        }
         $json = isset( $options['format'] ) && $options['format'] === 'json';
         $engine = new \expStaticImportEngine( $type, array( 'pull' => false ) );
         $result = $engine->restoreDates( array( 'dry_run' => !empty( $options['dry-run'] ), 'restart' => !empty( $options['restart'] ),
                                                 'batch' => !empty( $options['batch'] ) ? (int)$options['batch'] : 200,
                                                 'limit' => !empty( $options['limit'] ) ? (int)$options['limit'] : 0, 'index' => $index,
-                                                'paths' => !empty( $options['path'] ) ? (array)$options['path'] : array() ),
+                                                'paths' => !empty( $options['path'] ) ? (array)$options['path'] : array(), 'skip' => $skip ),
                                          $json ? null : function ( $done, $of ) { fwrite( STDERR, "\r$done of about $of objects" ); } );
         if ( $json )
             $this->output( json_encode( array( 'schema' => \expStaticImportEngine::SCHEMA, 'ok' => true, 'type' => $type ) + $result, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE ) );
@@ -62,8 +76,8 @@ class Dates extends \Exponential\Runnable\Command
                     $this->output( sprintf( '  %-14s %-12s %7d', $label, $source, $count ) );
             foreach ( $result['families'] as $family => $line )
                 $this->output( sprintf( '  %-24s %7d objects, published %d / %d / %d (min / median / max)', $family, $line['objects'], $line['min'], $line['median'], $line['max'] ) );
-            $this->output( sprintf( '%s %d objects, %d changed, %d (%.2f%%) still dated today, %d waiting; phase %s%s', $result['phase'] === 'done' ? 'PASS' : 'PARTIAL',
-                                    $result['objects'], $result['changed'], $result['today'], $result['today_percent'], $result['pending'], $result['phase'],
+            $this->output( sprintf( '%s %d objects, %d changed, %d (%.2f%%) still dated today, %d waiting, %d skipped; phase %s%s', $result['phase'] === 'done' ? 'PASS' : 'PARTIAL',
+                                    $result['objects'], $result['changed'], $result['today'], $result['today_percent'], $result['pending'], $result['skipped'], $result['phase'],
                                     $result['dry_run'] ? ' (dry run)' : '' ) );
         }
         $this->shutdown( 0 );

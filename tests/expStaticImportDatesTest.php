@@ -206,4 +206,11 @@ class expStaticImportDatesTest extends \PHPUnit\Framework\TestCase
         $dates = $this->chain()->resolve( 'display/EZP/page.html', $this->values( array( 'written_at' => '0' ) ) );
         $this->assertSame( 'git', $dates['created_source'] );
     }
+
+    public function testSkipListTakesTheFirstNumberOfEachLine()
+    {
+        $text = "# pages edited in the CMS\n7374\tupgrading\tgraham\n\n  5382 FAQ\r\n12x not an id\npath/7.html 9\n0\n7374 twice\n9363";
+        $this->assertSame( array( 5382 => true, 7374 => true, 9363 => true ), expStaticImportDates::parseSkipList( $text ) );
+        $this->assertSame( array(), expStaticImportDates::parseSkipList( '' ) );
+    }
 }
