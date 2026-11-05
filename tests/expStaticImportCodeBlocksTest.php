@@ -69,6 +69,35 @@ class expStaticImportCodeBlocksTest extends \PHPUnit\Framework\TestCase
         $this->assertStringContainsString( '<pre class="wordwrap copytoclipboard">a = 1</pre>', $html );
     }
 
+    /**
+     * Every form of code block the documentation export has (a scan of its 100,288 HTML files): each comes out as
+     * one <pre> with its text, a Confluence code macro as the doc_code custom tag with its language.
+     */
+    public function testEveryCodeBlockFormOfTheExportIsKept()
+    {
+        $forms = array(
+            'pre.wordwrap (54,119)' => '<pre class="wordwrap"><span class="line">a = 1</span></pre>',
+            'pre.wordwrap.copytoclipboard (22,375)' => '<pre class="wordwrap copytoclipboard"><span class="line">b = 2</span></pre>',
+            'pre.wordwrap.nocopy (287)' => '<pre class="wordwrap nocopy"><span class="line">c = 3</span></pre>',
+            'pre (28,471)' => '<pre>d = 4</pre>',
+            'pre.pfix (14,254)' => '<pre class="pfix">e = 5</pre>',
+            'Confluence code macro (13,864)' => '<div class="code panel pdl"><div class="codeContent panelContent pdl">'
+                . '<pre class="syntaxhighlighter-pre" data-syntaxhighlighter-params="brush: php; gutter: false">f = 6</pre></div></div>',
+            'Confluence noformat (2,128)' => '<div class="preformatted panel"><div class="preformattedContent panelContent"><pre>g = 7</pre></div></div>',
+            'Markdown highlight (127)' => '<div class="highlight highlight-php"><pre>h = 8</pre></div>',
+            'in a table cell (2,854)' => '<table><tr><td class="confluenceTd"><pre>i = 9</pre></td></tr></table>',
+            'in an output box (364)' => '<div class="output"><pre>j = 10</pre></div>',
+            'in a list item (74)' => '<ul><li><pre>k = 11</pre></li></ul>',
+        );
+        $html = $this->clean( $this->rules() + array( 'CodeLanguagePatterns' => array( '/brush:\s*([a-z0-9+#]+)/i' ) ),
+                              '<html><body>' . implode( '', $forms ) . '</body></html>' );
+        $this->assertSame( count( $forms ), preg_match_all( '#<pre\b#', $html ), $html );
+        foreach ( array( 'a = 1', 'b = 2', 'c = 3', 'd = 4', 'e = 5', 'f = 6', 'g = 7', 'h = 8', 'i = 9', 'j = 10', 'k = 11' ) as $line )
+            $this->assertStringContainsString( $line, $html );
+        $this->assertStringContainsString( 'class="doc_code"', $html );
+        $this->assertStringContainsString( 'lang|php', $html );
+    }
+
     public function testWithoutCodeSelectorsTheRemoveSelectorsWorkAsBefore()
     {
         $rules = $this->rules();
