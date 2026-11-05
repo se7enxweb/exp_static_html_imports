@@ -103,20 +103,37 @@ class expStaticImportHtmlCleaner
             foreach ( $this->toArray( expStaticImportDom::query( $doc, $selector, $body ) ) as $node )
                 if ( $node->getAttribute( 'data-static-import' ) !== 'literal' )
                     $this->convertCode( $doc, $node );
-        // every other <pre> of plain text (no links or styles inside): its text as a code block's (codeText())
+        // every other <pre>: a code block holds text only (the XML's literal shows markup inside it as text, so
+        // "Audit= <i>enabled|disabled</i>" of a settings page kept its tags as letters): its text as a code block's
+        // (codeText()). A <pre> around headings, paragraphs or other blocks is no code but the old site's layout
+        // (pre.pfix of the settings pages): it goes, and what it held stays
+        // (a <p> inside is a line of the code: pre.pfix holds "<p>Audit= <i>enabled|disabled</i></p>")
+        $blocks = array( 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'div', 'table', 'ul', 'ol', 'dl', 'pre', 'blockquote' );
         foreach ( $this->toArray( $body->getElementsByTagName( 'pre' ) ) as $node )
-            if ( !$node->hasAttribute( 'data-static-import' ) )
-            {
-                foreach ( $this->toArray( $node->getElementsByTagName( 'br' ) ) as $br )
-                    $br->parentNode->replaceChild( $doc->createTextNode( "\n" ), $br );
-                if ( !$node->getElementsByTagName( '*' )->length )
+        {
+            if ( $node->hasAttribute( 'data-static-import' ) || !$node->parentNode )
+                continue;
+            $layout = false;
+            foreach ( $blocks as $tag )
+                if ( $node->getElementsByTagName( $tag )->length )
                 {
-                    $text = self::codeText( $node->textContent );
-                    while ( $node->firstChild )
-                        $node->removeChild( $node->firstChild );
-                    $node->appendChild( $doc->createTextNode( $text ) );
+                    $layout = true;
+                    break;
                 }
+            if ( $layout )
+            {
+                $this->unwrap( $node );
+                continue;
             }
+            foreach ( $this->toArray( $node->getElementsByTagName( 'br' ) ) as $br )
+                $br->parentNode->replaceChild( $doc->createTextNode( "\n" ), $br );
+            foreach ( $this->toArray( $node->getElementsByTagName( 'p' ) ) as $p )
+                $p->parentNode->insertBefore( $doc->createTextNode( "\n" ), $p->nextSibling );
+            $text = self::codeText( $node->textContent );
+            while ( $node->firstChild )
+                $node->removeChild( $node->firstChild );
+            $node->appendChild( $doc->createTextNode( $text ) );
+        }
         foreach ( iterator_to_array( $xpath->query( './/*[@data-static-import]', $body ) ) as $node )
             $node->removeAttribute( 'data-static-import' );
 

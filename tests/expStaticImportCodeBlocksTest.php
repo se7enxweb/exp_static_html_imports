@@ -148,6 +148,22 @@ class expStaticImportCodeBlocksTest extends \PHPUnit\Framework\TestCase
         $this->assertSame( '<pre>one<br />  two<br />three</pre>', expStaticImportHtmlCleaner::preLinesAsBreaks( "<pre>one\r\n  two\nthree</pre>" ) );
     }
 
+    /**
+     * A settings page's pre.pfix holds the setting's line with its styles ("Audit= <i>enabled|disabled</i>"): the
+     * code block keeps the text only (the literal would show the tags as letters). A pre.pfix around a heading is the
+     * old site's layout: it goes, the heading stays.
+     */
+    public function testAPreWithStylesKeepsItsTextAndALayoutPreGoes()
+    {
+        $html = $this->clean( $this->rules(), '<html><body><pre class="pfix"> <p>Audit= <i>enabled|disabled</i> </p></pre>'
+            . '<pre class="pfix"><p>ExtensionDirectories[]= <i>directory1</i> </p><p>ExtensionDirectories[]= <i>directory2</i> </p></pre>'
+            . '<pre class="pfix"><a name="x"></a><h5><b>Usage</b></h5><pre class="wordwrap"><span class="line">a = 1</span></pre></pre></body></html>' );
+        $this->assertStringContainsString( '<pre class="pfix">Audit= enabled|disabled</pre>', $html );
+        $this->assertStringContainsString( "<pre class=\"pfix\">ExtensionDirectories[]= directory1\nExtensionDirectories[]= directory2</pre>", $html );
+        $this->assertStringContainsString( '<h5><b>Usage</b></h5><pre class="wordwrap">a = 1</pre>', $html );
+        $this->assertSame( 3, preg_match_all( '#<pre\b#', $html ) );
+    }
+
     public function testWithoutCodeSelectorsTheRemoveSelectorsWorkAsBefore()
     {
         $rules = $this->rules();
