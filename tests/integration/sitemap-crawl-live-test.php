@@ -5,9 +5,9 @@
  *
  *   php bin/php/ezexec.php extension/exp_static_html_imports/tests/integration/sitemap-crawl-live-test.php
  *
- * Env: EXP_CRAWL_BASE the site (default https://doc.exponential.earth/doc/), EXP_CRAWL_URLS a comma list of paths
- *      below it (default five pages of the documentation), EXP_CRAWL_SITEMAP a sitemap instead ("none" by default:
- *      the pages are named).
+ * Env: EXP_CRAWL_BASE the site (default https://doc.exponential.earth/, where the documentation is served since
+ *      it left /doc/), EXP_CRAWL_URLS a comma list of paths below it (default five pages of the documentation),
+ *      EXP_CRAWL_SITEMAP a sitemap instead ("none" by default: the pages are named).
  *
  * Checks: robots.txt of the host is read first; one request a second at most (RequestInterval=1); every request
  * carries the crawler's own user agent; the pages are imported below the test folder with their titles; a second run
@@ -21,7 +21,7 @@
 $label = 'it-sitemap-crawl';
 require __DIR__ . '/sandbox.php';
 
-$base = rtrim( getenv( 'EXP_CRAWL_BASE' ) ?: 'https://doc.exponential.earth/doc/', '/' ) . '/';
+$base = rtrim( getenv( 'EXP_CRAWL_BASE' ) ?: 'https://doc.exponential.earth/', '/' ) . '/';
 $urls = array_values( array_filter( array_map( 'trim', explode( ',', getenv( 'EXP_CRAWL_URLS' )
         ?: 'exponential/technical-manual,exponential/user-manual,platform,contributors,recent' ) ) ) );
 $mirror = expStaticImportEngine::workDir( $label ) . '/mirror';
