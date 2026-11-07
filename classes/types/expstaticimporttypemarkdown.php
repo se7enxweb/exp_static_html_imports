@@ -130,6 +130,22 @@ class expStaticImportTypeMarkdown extends expStaticImportHtmlType
     }
 
     /**
+     * The soft line breaks of Markdown paragraphs ("one of the\nmost") as spaces: the rich text parser drops a newline
+     * between two words instead of reading it as a space, so "themost" would be stored. Code in <pre> keeps its lines.
+     *
+     * @param string $html
+     * @return string HTML
+     */
+    public static function softBreaksToSpaces( $html )
+    {
+        $parts = preg_split( '#(<pre\b.*?</pre>)#is', $html, -1, PREG_SPLIT_DELIM_CAPTURE );
+        foreach ( $parts as $i => $part )
+            if ( $i % 2 === 0 )
+                $parts[$i] = preg_replace( '/[ \t]*\r?\n[ \t]*/', ' ', $part );
+        return implode( '', $parts );
+    }
+
+    /**
      * @param string $markdown
      * @param string $path
      * @return string HTML
@@ -139,7 +155,11 @@ class expStaticImportTypeMarkdown extends expStaticImportHtmlType
         if ( class_exists( 'expHelpMarkdownRenderer' ) )
         {
             $renderer = new expHelpMarkdownRenderer();
-            return (string)$renderer->render( $markdown, $path );
+            $rendered = $renderer->render( $markdown, $path );
+            // the help center's renderer answers array( 'html' => ..., 'toc' => ..., ... ); older kernels a string
+            if ( is_array( $rendered ) )
+                $rendered = isset( $rendered['html'] ) ? $rendered['html'] : '';
+            return self::softBreaksToSpaces( (string)$rendered );
         }
         // the smallest fallback: paragraphs and headings, everything escaped
         $html = '';
