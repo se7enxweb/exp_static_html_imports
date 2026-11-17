@@ -208,10 +208,18 @@ class expStaticImportTypeSitemapCrawl extends expStaticImportHtmlType
             'follow_location' => 1,
             'max_redirects' => 5,
         ) ) );
+        // PHP 8.4+ hands the response headers out by function; the local $http_response_header is deprecated
+        // as of 8.5, and naming it in the source is already the deprecation, so older PHP reads it by name at
+        // run time. That needs the symbol table attached before the request, or PHP has nowhere to store it.
+        if ( !function_exists( 'http_get_last_response_headers' ) )
+            get_defined_vars();
         $body = @file_get_contents( $url, false, $context );
         $status = 0;
-        if ( isset( $http_response_header ) )
-            foreach ( $http_response_header as $header )
+        $headers = function_exists( 'http_get_last_response_headers' )
+            ? http_get_last_response_headers()
+            : ( get_defined_vars()['http_response_header'] ?? null );
+        if ( is_array( $headers ) )
+            foreach ( $headers as $header )
                 if ( preg_match( '#^HTTP/\S+\s+(\d{3})#', $header, $m ) )
                     $status = (int)$m[1];
         return ( $body === false || $status !== 200 ) ? null : $body;
