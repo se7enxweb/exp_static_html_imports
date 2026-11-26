@@ -4,7 +4,7 @@
  * job (expqueue), the reports. Each view needs a policy of its own: staticimport/read to look, staticimport/run to
  * start a run, staticimport/setup for the settings; run and setup also ask "Verify it's you".
  *
- * @copyright Copyright (C) 1998 - 2026 Exponential Foundation and 7x. All rights reserved.
+ * @copyright Copyright (C) 1998 - 2026 Exponential Foundation and 7x; All rights reserved.
  * @license GNU General Public License v2.0 (or any later version)
  * @package exp_static_html_imports
  */

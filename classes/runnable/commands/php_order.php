@@ -3,7 +3,7 @@
  * exp:static-import:order (ext:exp_static_html_imports:order): gives the children of the imported containers the order
  * the static site listed them in (node priorities, the container sorted by priority).
  *
- * @copyright Copyright (C) 1998 - 2026 Exponential Foundation and 7x. All rights reserved.
+ * @copyright Copyright (C) 1998 - 2026 Exponential Foundation and 7x; All rights reserved.
  * @license GNU General Public License v2.0 (or any later version)
  * @package exp_static_html_imports
  */

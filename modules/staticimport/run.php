@@ -3,7 +3,7 @@
  * staticimport/run: starts a run of an import type as a background job (expqueue), or runs it here when the job
  * queue is not installed; then goes to the dashboard. A form posts here and redirects; nothing is read from GET.
  *
- * @copyright Copyright (C) 1998 - 2026 Exponential Foundation and 7x. All rights reserved.
+ * @copyright Copyright (C) 1998 - 2026 Exponential Foundation and 7x; All rights reserved.
  * @license GNU General Public License v2.0 (or any later version)
  * @package exp_static_html_imports
  */

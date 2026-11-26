@@ -8,7 +8,7 @@
  * After it: $check( bool, text ), $stop( text ), $failures, $work (the work folder), $admin, $topNode.
  * Env: EXP_IT_DIR the work folder (default var/<site>/static-import/integration-test); each run overwrites it.
  *
- * @copyright Copyright (C) 1998 - 2026 Exponential Foundation and 7x. All rights reserved.
+ * @copyright Copyright (C) 1998 - 2026 Exponential Foundation and 7x; All rights reserved.
  * @license GNU General Public License v2.0 (or any later version)
  * @package exp_static_html_imports
  */

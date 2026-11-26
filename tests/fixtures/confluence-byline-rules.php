@@ -2,7 +2,7 @@
 /**
  * The byline rules of Confluence's page sentences, as exp_doc sets them for --doc-html, for the tests.
  *
- * @copyright Copyright (C) 1998 - 2026 Exponential Foundation and 7x. All rights reserved.
+ * @copyright Copyright (C) 1998 - 2026 Exponential Foundation and 7x; All rights reserved.
  * @license GNU General Public License v2.0 (or any later version)
  * @package exp_static_html_imports
  */

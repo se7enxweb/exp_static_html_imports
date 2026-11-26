@@ -13,7 +13,7 @@
  * carries the crawler's own user agent; the pages are imported below the test folder with their titles; a second run
  * reads the mirror and sends no request for the pages.
  *
- * @copyright Copyright (C) 1998 - 2026 Exponential Foundation and 7x. All rights reserved.
+ * @copyright Copyright (C) 1998 - 2026 Exponential Foundation and 7x; All rights reserved.
  * @license GNU General Public License v2.0 (or any later version)
  * @package exp_static_html_imports
  */

@@ -3,7 +3,7 @@
  * exp:static-import:bylines (ext:exp_static_html_imports:bylines): the no-data-loss audit of the bylines, and the fill
  * of what is missing.
  *
- * @copyright Copyright (C) 1998 - 2026 Exponential Foundation and 7x. All rights reserved.
+ * @copyright Copyright (C) 1998 - 2026 Exponential Foundation and 7x; All rights reserved.
  * @license GNU General Public License v2.0 (or any later version)
  * @package exp_static_html_imports
  */

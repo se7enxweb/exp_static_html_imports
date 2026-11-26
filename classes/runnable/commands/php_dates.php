@@ -3,7 +3,7 @@
  * exp:static-import:dates (ext:exp_static_html_imports:dates): gives the objects an earlier run imported their real
  * dates (published and modified) by the type's DateRules[].
  *
- * @copyright Copyright (C) 1998 - 2026 Exponential Foundation and 7x. All rights reserved.
+ * @copyright Copyright (C) 1998 - 2026 Exponential Foundation and 7x; All rights reserved.
  * @license GNU General Public License v2.0 (or any later version)
  * @package exp_static_html_imports
  */
